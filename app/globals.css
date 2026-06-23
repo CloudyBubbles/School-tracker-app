@@ -3,24 +3,40 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+
+  --parchment: #f4ead5;
+  --parchment-dark: #eadcc5;
+  --parchment-edge: #ddd0bb;
+  --ink-dark: #2c1810;
+  --ink-medium: #5c3d20;
+  --ink-light: #8a6040;
+  --leather: #1a0c04;
+  --leather-mid: #2a1408;
+  --gold: #c8a050;
+  --gold-dim: rgba(200,160,80,0.3);
+  --font-serif: 'Lora', Georgia, serif;
+  --font-display: 'Playfair Display', Georgia, serif;
+  --font-hand: 'Caveat', cursive;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
 }
 
 body {
   background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  color: var(--ink-dark);
+  font-family: var(--font-serif);
+  color-scheme: light;
 }
+
+input, select, textarea, option {
+  color: var(--ink-dark);
+  -webkit-text-fill-color: var(--ink-dark);
+}
+
+.journal-page {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cpath d='M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z' fill='none' stroke='%232c1810' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") 2 22, crosshair;
+}
+

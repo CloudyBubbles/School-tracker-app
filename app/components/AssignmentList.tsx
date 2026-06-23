@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Assignment } from "@/app/types";
 import AssignmentCard from "./AssignmentCard";
 
@@ -32,9 +33,25 @@ export default function AssignmentList({
   onClearFilter,
   formatDate,
 }: AssignmentListProps) {
-  const filteredAssignments = filterSubject
+  const [showDone, setShowDone] = useState(false);
+  const [search, setSearch] = useState("");
+
+  const subjectFiltered = filterSubject
     ? sortedAssignments.filter((a) => a.subject === filterSubject)
     : sortedAssignments;
+
+  const searchFiltered = search.trim()
+    ? subjectFiltered.filter((a) => {
+        const q = search.toLowerCase();
+        return a.title.toLowerCase().includes(q) || a.subject.toLowerCase().includes(q);
+      })
+    : subjectFiltered;
+
+  const visibleAssignments = showDone
+    ? searchFiltered
+    : searchFiltered.filter((a) => a.status !== "Done");
+
+  const hiddenDoneCount = searchFiltered.filter((a) => a.status === "Done").length;
 
   return (
     <div>
@@ -42,15 +59,45 @@ export default function AssignmentList({
         <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
           Assignments
           <span className="ml-1 font-normal text-slate-400">
-            ({filteredAssignments.length})
+            ({visibleAssignments.length})
           </span>
         </p>
-        {filterSubject && (
+        <div className="flex items-center gap-3">
+          {hiddenDoneCount > 0 && (
+            <button
+              onClick={() => setShowDone((v) => !v)}
+              className="text-xs text-slate-400 hover:text-slate-600 transition-colors duration-150"
+            >
+              {showDone ? "Hide done" : `Show done (${hiddenDoneCount})`}
+            </button>
+          )}
+          {filterSubject && (
+            <button
+              onClick={onClearFilter}
+              className="text-xs text-slate-400 hover:text-slate-600 transition-colors duration-150"
+            >
+              Clear filter
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="relative mb-3">
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search assignments..."
+          className="w-full px-3 py-2 pr-8 text-sm border border-slate-200 rounded-lg text-slate-900 placeholder-slate-400 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+        />
+        {search && (
           <button
-            onClick={onClearFilter}
-            className="text-xs text-slate-400 hover:text-slate-600 transition-colors"
+            type="button"
+            onClick={() => setSearch("")}
+            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors duration-150 leading-none"
+            aria-label="Clear search"
           >
-            Clear filter
+            ×
           </button>
         )}
       </div>
@@ -67,9 +114,19 @@ export default function AssignmentList({
             No assignments yet. Add one above to get started.
           </p>
         </div>
+      ) : visibleAssignments.length === 0 ? (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-10 text-center">
+          <p className="text-slate-400 text-sm">
+            {search.trim()
+              ? "No assignments match your search."
+              : hiddenDoneCount > 0
+              ? "All done! Use \"Show done\" above to review them."
+              : "No assignments match the current filter."}
+          </p>
+        </div>
       ) : (
         <div className="space-y-2">
-          {filteredAssignments.map((assignment) => {
+          {visibleAssignments.map((assignment) => {
             const overdue = isOverdue(assignment.dueDate, assignment.status);
             return (
               <AssignmentCard

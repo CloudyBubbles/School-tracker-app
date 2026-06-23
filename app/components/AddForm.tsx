@@ -5,8 +5,10 @@ interface AddFormProps {
   form: {
     subject: string;
     title: string;
+    startDate: string;
     dueDate: string;
     status: Assignment["status"];
+    priority: Assignment["priority"];
     notes: string;
   };
   checkpoints: Checkpoint[];
@@ -16,6 +18,8 @@ interface AddFormProps {
     dueDate?: string;
   };
   editingId: string | null;
+  isFormOpen: boolean;
+  onOpenForm: () => void;
   onFormChange: (field: keyof AddFormProps["form"], value: string) => void;
   onErrorClear: (field: "subject" | "title" | "dueDate") => void;
   onAddCheckpoint: (label: string) => void;
@@ -30,6 +34,8 @@ export default function AddForm({
   checkpoints,
   errors,
   editingId,
+  isFormOpen,
+  onOpenForm,
   onFormChange,
   onErrorClear,
   onAddCheckpoint,
@@ -41,24 +47,37 @@ export default function AddForm({
   const inputClass =
     "w-full px-3 py-2 text-sm border border-slate-200 rounded-lg text-slate-900 placeholder-slate-400 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition";
 
+  const open = isFormOpen || !!editingId;
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={onOpenForm}
+        className="flex items-center gap-1.5 text-sm font-medium text-blue-600 hover:text-blue-700 bg-white border border-slate-200 rounded-xl shadow-sm px-4 py-3 w-full transition-colors duration-150 hover:bg-blue-50"
+      >
+        <span className="text-base leading-none">+</span>
+        Add Assignment
+      </button>
+    );
+  }
+
   return (
-    <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+    <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 sm:p-5">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-sm font-semibold text-slate-900">
           {editingId ? "Edit Assignment" : "Add New Assignment"}
         </h2>
-        {editingId && (
-          <button
-            type="button"
-            onClick={onCancel}
-            className="text-xs text-slate-400 hover:text-slate-600 transition-colors"
-          >
-            Cancel
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={onCancel}
+          className="text-xs text-slate-400 hover:text-slate-600 transition-colors duration-150"
+        >
+          Cancel
+        </button>
       </div>
       <form onSubmit={onSubmit} className="space-y-3">
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div>
             <label className="block text-xs font-medium text-slate-500 mb-1">
               Subject
@@ -76,6 +95,17 @@ export default function AddForm({
             {errors.subject && (
               <p className="text-xs text-red-500 mt-1">{errors.subject}</p>
             )}
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-500 mb-1">
+              Start Date <span className="text-slate-400 font-normal">(optional)</span>
+            </label>
+            <input
+              type="date"
+              value={form.startDate}
+              onChange={(e) => onFormChange("startDate", e.target.value)}
+              className={inputClass}
+            />
           </div>
           <div>
             <label className="block text-xs font-medium text-slate-500 mb-1">
@@ -115,21 +145,33 @@ export default function AddForm({
           )}
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
           <div>
             <label className="block text-xs font-medium text-slate-500 mb-1">
               Status
             </label>
             <select
               value={form.status}
-              onChange={(e) =>
-                onFormChange("status", e.target.value)
-              }
+              onChange={(e) => onFormChange("status", e.target.value)}
               className={inputClass}
             >
               <option>To do</option>
               <option>In progress</option>
               <option>Done</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-500 mb-1">
+              Priority
+            </label>
+            <select
+              value={form.priority}
+              onChange={(e) => onFormChange("priority", e.target.value)}
+              className={inputClass}
+            >
+              <option>Low</option>
+              <option>Medium</option>
+              <option>High</option>
             </select>
           </div>
           <div className="sm:col-span-2">
@@ -146,18 +188,16 @@ export default function AddForm({
           </div>
         </div>
 
-        {editingId && (
-          <CheckpointList
-            checkpoints={checkpoints}
-            onAddCheckpoint={onAddCheckpoint}
-            onToggleCheckpoint={onToggleCheckpoint}
-            onRemoveCheckpoint={onRemoveCheckpoint}
-          />
-        )}
+        <CheckpointList
+          checkpoints={checkpoints}
+          onAddCheckpoint={onAddCheckpoint}
+          onToggleCheckpoint={onToggleCheckpoint}
+          onRemoveCheckpoint={onRemoveCheckpoint}
+        />
 
         <button
           type="submit"
-          className="w-full bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white text-sm font-semibold py-2.5 px-4 rounded-lg transition-colors"
+          className="w-full bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white text-sm font-semibold py-2.5 px-4 rounded-lg transition-colors duration-150"
         >
           {editingId ? "Save Changes" : "Add Assignment"}
         </button>
