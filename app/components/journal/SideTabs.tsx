@@ -6,15 +6,17 @@ interface Props {
   subjects: Subject[];
   activeSubjectId: string | null;
   onNavigate: (path: string) => void;
+  onChapterNav?: (href: string) => void;
   urgentIds?: string[];
   counts?: Record<string, number>;
 }
 
-export default function SideTabs({ subjects, activeSubjectId, onNavigate, urgentIds = [], counts = {} }: Props) {
+export default function SideTabs({ subjects, activeSubjectId, onNavigate, onChapterNav, urgentIds = [], counts = {} }: Props) {
   const tabs = [
     { id: "__home", label: "Today", path: "/journal", colour: "#8a6040" },
     ...subjects.map((s) => ({ id: s.id, label: s.name, path: `/journal/${s.id}`, colour: s.colour })),
     { id: "__archive", label: "Archive", path: "/journal/archive", colour: "#8a6040" },
+    { id: "__stats", label: "Stats", path: "/journal/stats", colour: "#8a6040" },
   ];
 
   return (
@@ -41,7 +43,14 @@ export default function SideTabs({ subjects, activeSubjectId, onNavigate, urgent
         return (
           <button
             key={tab.id}
-            onClick={() => { if (!isActive) onNavigate(tab.path); }}
+            onClick={() => {
+              if (isActive) return;
+              if (!tab.id.startsWith("__") && onChapterNav) {
+                onChapterNav(tab.path);
+              } else {
+                onNavigate(tab.path);
+              }
+            }}
             title={tab.label}
             className="sidetab-btn"
             data-active={isActive ? "true" : "false"}

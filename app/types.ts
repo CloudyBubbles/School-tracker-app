@@ -15,4 +15,7 @@ export interface Assignment {
   notes: string;
   checkpoints: Checkpoint[];
   estimatedTime?: string;
+  recurring?: "weekly" | "fortnightly" | "monthly";
+  completedAt?: string;
+  order?: number;
 }

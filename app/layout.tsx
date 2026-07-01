@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { PageTransitionProvider } from "@/app/components/PageTransitionProvider";
+import RiffleOverlay from "@/app/components/RiffleOverlay";
+import PomodoroTimer from "@/app/components/journal/PomodoroTimer";
+import SoundManager from "@/app/components/SoundManager";
 
 export const metadata: Metadata = {
   title: "Schoolwork Tracker",
@@ -15,6 +18,11 @@ export default function RootLayout({
   return (
     <html lang="en" className="h-full" style={{ colorScheme: "light" }}>
       <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `try{if(localStorage.getItem('candlelight')==='true')document.documentElement.classList.add('candlelight');if(localStorage.getItem('sounds')==='true')document.documentElement.classList.add('sounds-on')}catch(e){}`,
+          }}
+        />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
         <link
@@ -24,10 +32,14 @@ export default function RootLayout({
       </head>
       <body className="min-h-full flex flex-col">
         <div style={{ perspective: "1200px", perspectiveOrigin: "center center" }}>
-          <PageTransitionProvider>
-            {children}
-          </PageTransitionProvider>
+          <RiffleOverlay>
+            <PageTransitionProvider>
+              {children}
+            </PageTransitionProvider>
+          </RiffleOverlay>
         </div>
+        <PomodoroTimer />
+        <SoundManager />
       </body>
     </html>
   );

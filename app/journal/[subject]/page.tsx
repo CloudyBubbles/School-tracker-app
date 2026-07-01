@@ -1,31 +1,23 @@
 "use client";
 
 import { use, useEffect, useRef, useState } from "react";
+import { useIsMobile } from "@/app/hooks/useIsMobile";
+import { useRiffle } from "@/app/lib/riffle-context";
 import { useRouter } from "next/navigation";
 import { motion, animate } from "framer-motion";
 import { usePageTransition } from "@/app/components/PageTransitionProvider";
 import { loadAssignments, saveAssignments, loadChapterNotes, saveChapterNote } from "@/app/lib/storage";
+import { cycleAssignmentStatus } from "@/app/lib/assignments";
 import { parseLocalDate, relativeDueLabel } from "@/app/lib/dates";
+import { toDateStr, urgencyColour, PRIORITY_ORDER, toRoman } from "@/app/lib/utils";
 import { getSubjects, Subject } from "@/app/lib/subjects";
 import { Assignment, Checkpoint } from "@/app/types";
 import ParchmentPage from "@/app/components/journal/ParchmentPage";
 import PageStack from "@/app/components/journal/PageStack";
 import SideTabs from "@/app/components/journal/SideTabs";
 
-function toRoman(n: number): string {
-  const vals = [1000,900,500,400,100,90,50,40,10,9,5,4,1];
-  const syms = ["M","CM","D","CD","C","XC","L","XL","X","IX","V","IV","I"];
-  let out = "";
-  for (let i = 0; i < vals.length; i++) {
-    while (n >= vals[i]) { out += syms[i]; n -= vals[i]; }
-  }
-  return out;
-}
-
 const STATUS_OPTIONS: Assignment["status"][] = ["To do", "In progress", "Done"];
 const PRIORITY_OPTIONS: Assignment["priority"][] = ["Low", "Medium", "High"];
-
-const PRIORITY_ORDER: Record<string, number> = { High: 0, Medium: 1, Low: 2 };
 
 const PRIORITY_COLOUR: Record<Assignment["priority"], string> = {
   Low: "#a0a080",
@@ -45,26 +37,6 @@ const STATUS_COLOR: Record<Assignment["status"], string> = {
   "Done": "#2d7a2d",
 };
 
-const STATUS_NEXT: Record<Assignment["status"], Assignment["status"]> = {
-  "To do": "In progress",
-  "In progress": "Done",
-  "Done": "To do",
-};
-
-function urgencyColour(dateStr: string): string {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const diff = Math.round((parseLocalDate(dateStr).getTime() - today.getTime()) / 86400000);
-  if (diff < 0)  return "#b04040";
-  if (diff <= 2) return "#c06030";
-  if (diff <= 6) return "#c8a050";
-  return "var(--ink-medium)";
-}
-
-function toDateStr(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
 function timelineProgress(startDate: string, dueDate: string): number | null {
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const start = parseLocalDate(startDate);
@@ -83,6 +55,7 @@ interface FormState {
   priority: Assignment["priority"];
   notes: string;
   estimatedTime?: string;
+  recurring?: Assignment["recurring"];
 }
 
 const EMPTY_FORM: FormState = {
@@ -93,6 +66,7 @@ const EMPTY_FORM: FormState = {
   priority: "Medium",
   notes: "",
   estimatedTime: "",
+  recurring: undefined,
 };
 
 export default function ChapterPage({
@@ -103,7 +77,10 @@ export default function ChapterPage({
   const { subject: subjectId } = use(params);
   const router = useRouter();
   const pageRef = useRef<HTMLDivElement>(null);
+  const touchStartRef = useRef<{ x: number; y: number } | null>(null);
   const { startTransition, endTransition } = usePageTransition();
+  const isMobile = useIsMobile();
+  const { trigger: triggerRiffle } = useRiffle();
 
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [subject, setSubject] = useState<Subject | null>(null);
@@ -119,11 +96,14 @@ export default function ChapterPage({
   const [newCheckpointInput, setNewCheckpointInput] = useState("");
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [showDone, setShowDone] = useState(true);
-  const [sortMode, setSortMode] = useState<"date" | "priority">("date");
+  const [sortMode, setSortMode] = useState<"date" | "priority" | "custom">("date");
+  const [draggingId, setDraggingId] = useState<string | null>(null);
   const [expandedNotes, setExpandedNotes] = useState<Set<string>>(new Set());
   const [urgentIds, setUrgentIds] = useState<string[]>([]);
   const [tabCounts, setTabCounts] = useState<Record<string, number>>({});
   const [pinnedNote, setPinnedNote] = useState("");
+  const [stampingId, setStampingId] = useState<string | null>(null);
+  const [flipping, setFlipping] = useState(false);
 
   useEffect(() => {
     endTransition();
@@ -142,6 +122,9 @@ export default function ChapterPage({
     const filtered = all
       .filter((a) => a.subject.toLowerCase() === subs[idx].name.toLowerCase())
       .sort((a, b) => parseLocalDate(a.dueDate).getTime() - parseLocalDate(b.dueDate).getTime());
+    if (filtered.some((a) => a.order != null)) {
+      setSortMode("custom");
+    }
     setAssignments(filtered);
     setEditingId(null);
     setDeleteConfirmId(null);
@@ -168,6 +151,25 @@ export default function ChapterPage({
     setTabCounts(tabCountsMap);
   }, [subjectId, router]);
 
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT") return;
+      if (e.key === "a" || e.key === "A") {
+        e.preventDefault();
+        setShowForm((v) => !v);
+      }
+      if (e.key === "Escape") {
+        setShowForm(false);
+        setEditingId(null);
+        setDeleteConfirmId(null);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
+
   const refreshAssignments = (all: Assignment[]) => {
     setAssignments(
       all
@@ -192,6 +194,39 @@ export default function ChapterPage({
   const handleNoteChange = (val: string) => {
     setPinnedNote(val);
     saveChapterNote(subjectId, val);
+  };
+
+  const loadData = () => {
+    const subs = getSubjects();
+    const idx = subs.findIndex((s) => s.id === subjectId);
+    if (idx === -1) return;
+    const all = loadAssignments();
+    const filtered = all.filter(
+      (a) => a.subject.toLowerCase() === subs[idx].name.toLowerCase()
+    );
+    if (filtered.some((a) => a.order != null) && sortMode === "date") {
+      setSortMode("custom");
+    }
+    setAssignments(filtered);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const urgentSet = new Set<string>();
+    for (const a of all) {
+      if (a.status === "Done") continue;
+      const due = parseLocalDate(a.dueDate);
+      if (due <= today) {
+        const subId = subs.find((s) => s.name.toLowerCase() === a.subject.toLowerCase())?.id;
+        if (subId) urgentSet.add(subId);
+      }
+    }
+    setUrgentIds([...urgentSet]);
+    const tabCountsMap: Record<string, number> = {};
+    for (const sub of subs) {
+      tabCountsMap[sub.id] = all.filter(
+        (a) => a.status !== "Done" && a.subject.toLowerCase() === sub.name.toLowerCase()
+      ).length;
+    }
+    setTabCounts(tabCountsMap);
   };
 
   const recomputeTabCounts = () => {
@@ -229,6 +264,36 @@ export default function ChapterPage({
     router.push(path);
   };
 
+  const handleChapterNav = (href: string) => {
+    if (flipping) return;
+    setFlipping(true);
+    triggerRiffle(() => router.push(href));
+    setTimeout(() => setFlipping(false), 400);
+  };
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    touchStartRef.current = {
+      x: e.touches[0].clientX,
+      y: e.touches[0].clientY,
+    };
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    if (!touchStartRef.current || !isMobile || flipping) return;
+    const dx = e.changedTouches[0].clientX - touchStartRef.current.x;
+    const dy = e.changedTouches[0].clientY - touchStartRef.current.y;
+    touchStartRef.current = null;
+
+    if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy)) return;
+
+    const currentIdx = subjects.findIndex((s) => s.id === subjectId);
+    if (dx < 0 && currentIdx < subjects.length - 1) {
+      handleChapterNav(`/journal/${subjects[currentIdx + 1].id}`);
+    } else if (dx > 0 && currentIdx > 0) {
+      handleChapterNav(`/journal/${subjects[currentIdx - 1].id}`);
+    }
+  };
+
   const toggleNote = (id: string) => {
     setExpandedNotes((prev) => {
       const next = new Set(prev);
@@ -249,17 +314,19 @@ export default function ChapterPage({
     refreshAssignments(updated);
   };
 
-  const handleCycleStatus = (assignmentId: string, currentStatus: Assignment["status"]) => {
-    const all = loadAssignments();
-    const updated = all.map((a) => a.id === assignmentId ? { ...a, status: STATUS_NEXT[currentStatus] } : a);
-    saveAssignments(updated);
+  const handleCycleStatus = (assignmentId: string) => {
+    const updated = cycleAssignmentStatus(assignmentId);
     refreshAssignments(updated);
     recomputeTabCounts();
+    if (updated.find((a) => a.id === assignmentId)?.status === "Done") {
+      setStampingId(assignmentId);
+      setTimeout(() => setStampingId(null), 700);
+    }
   };
 
   const handleOpenEdit = (a: Assignment) => {
     setEditingId(a.id);
-    setEditForm({ title: a.title, startDate: a.startDate ?? "", dueDate: a.dueDate, status: a.status, priority: a.priority, notes: a.notes, estimatedTime: a.estimatedTime ?? "" });
+    setEditForm({ title: a.title, startDate: a.startDate ?? "", dueDate: a.dueDate, status: a.status, priority: a.priority, notes: a.notes, estimatedTime: a.estimatedTime ?? "", recurring: a.recurring });
     setEditError({ title: false, dueDate: false });
     setEditCheckpoints([...a.checkpoints]);
     setNewCheckpointInput("");
@@ -303,6 +370,24 @@ export default function ChapterPage({
     recomputeTabCounts();
   };
 
+  const handleDropOnCard = (targetId: string) => {
+    if (!draggingId || draggingId === targetId) return;
+    const reordered = [...displayedAssignments];
+    const fromIdx = reordered.findIndex((a) => a.id === draggingId);
+    const toIdx   = reordered.findIndex((a) => a.id === targetId);
+    if (fromIdx === -1 || toIdx === -1) return;
+    const [moved] = reordered.splice(fromIdx, 1);
+    reordered.splice(toIdx, 0, moved);
+    const withOrder = reordered.map((a, i) => ({ ...a, order: i }));
+    const all = loadAssignments();
+    const orderMap = Object.fromEntries(withOrder.map((a) => [a.id, a.order]));
+    const merged = all.map((a) => (a.id in orderMap ? { ...a, order: orderMap[a.id] } : a));
+    saveAssignments(merged);
+    setSortMode("custom");
+    setDraggingId(null);
+    loadData();
+  };
+
   const handleAddEntry = () => {
     const errors = { title: !form.title.trim(), dueDate: !form.dueDate };
     if (errors.title || errors.dueDate) {
@@ -321,6 +406,7 @@ export default function ChapterPage({
       notes: form.notes,
       checkpoints: [],
       estimatedTime: form.estimatedTime || undefined,
+      recurring: form.recurring || undefined,
     };
     const all = loadAssignments();
     const updated = [...all, newA];
@@ -375,6 +461,13 @@ export default function ChapterPage({
         if (pa !== pb) return pa - pb;
         return parseLocalDate(a.dueDate).getTime() - parseLocalDate(b.dueDate).getTime();
       })
+    : sortMode === "custom"
+    ? [...assignments].sort((a, b) => {
+        const ao = a.order ?? Infinity;
+        const bo = b.order ?? Infinity;
+        if (ao !== bo) return ao - bo;
+        return parseLocalDate(a.dueDate).getTime() - parseLocalDate(b.dueDate).getTime();
+      })
     : assignments;
 
   const displayedAssignments = showDone
@@ -384,7 +477,11 @@ export default function ChapterPage({
   if (!subject) return null;
 
   return (
-    <div style={{ display: "flex", minHeight: "100vh" }}>
+    <div
+      style={{ display: "flex", minHeight: "100vh", transformStyle: "preserve-3d" }}
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
+    >
       <motion.div
         ref={pageRef}
         key={subjectId}
@@ -394,7 +491,7 @@ export default function ChapterPage({
         style={{ flex: 1, transformOrigin: "left center", transformStyle: "preserve-3d" }}
       >
         <ParchmentPage showLines>
-          <div style={{ maxWidth: "680px", margin: "0 auto", padding: "40px 32px 60px" }}>
+          <div style={{ maxWidth: "680px", margin: "0 auto", padding: isMobile ? "20px 16px 60px" : "40px 32px 60px" }}>
             {/* Close button */}
             <button
               onClick={handleClose}
@@ -473,6 +570,8 @@ export default function ChapterPage({
                   resize: "vertical",
                   minHeight: "56px",
                   outline: "none",
+                  WebkitTextFillColor: "var(--ink-dark)",
+                  colorScheme: "light" as const,
                 }}
               />
             </div>
@@ -504,7 +603,15 @@ export default function ChapterPage({
               <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
                 <span style={{ fontFamily: "var(--font-hand)", fontSize: "9px", color: "var(--ink-light)", opacity: 0.7 }}>sort:</span>
                 <button
-                  onClick={() => setSortMode("date")}
+                  onClick={() => {
+                    if (sortMode === "custom") {
+                      const all = loadAssignments();
+                      const cleared = all.map((a) => a.subject.toLowerCase() === subject.name.toLowerCase() ? { ...a, order: undefined } : a);
+                      saveAssignments(cleared);
+                      loadData();
+                    }
+                    setSortMode("date");
+                  }}
                   style={{
                     background: "transparent",
                     border: "none",
@@ -521,7 +628,15 @@ export default function ChapterPage({
                 </button>
                 <span style={{ fontFamily: "var(--font-hand)", fontSize: "9px", color: "var(--ink-light)", opacity: 0.5 }}>/</span>
                 <button
-                  onClick={() => setSortMode("priority")}
+                  onClick={() => {
+                    if (sortMode === "custom") {
+                      const all = loadAssignments();
+                      const cleared = all.map((a) => a.subject.toLowerCase() === subject.name.toLowerCase() ? { ...a, order: undefined } : a);
+                      saveAssignments(cleared);
+                      loadData();
+                    }
+                    setSortMode("priority");
+                  }}
                   style={{
                     background: "transparent",
                     border: "none",
@@ -536,6 +651,27 @@ export default function ChapterPage({
                 >
                   priority
                 </button>
+                {displayedAssignments.some((a) => a.order != null) && (
+                  <>
+                    <span style={{ fontFamily: "var(--font-hand)", fontSize: "9px", color: "var(--ink-light)", opacity: 0.5 }}>·</span>
+                    <button
+                      onClick={() => setSortMode("custom")}
+                      style={{
+                        background: "transparent",
+                        border: "none",
+                        fontFamily: "var(--font-hand)",
+                        fontSize: "9px",
+                        color: sortMode === "custom" ? "var(--ink-medium)" : "var(--ink-light)",
+                        cursor: sortMode === "custom" ? "default" : "pointer",
+                        padding: 0,
+                        textDecoration: sortMode === "custom" ? "underline" : "none",
+                        opacity: sortMode === "custom" ? 1 : 0.6,
+                      }}
+                    >
+                      custom
+                    </button>
+                  </>
+                )}
               </div>
             </div>
 
@@ -635,6 +771,19 @@ export default function ChapterPage({
                       style={inputStyle(false)}
                     />
                   </div>
+                  <div>
+                    <div style={labelStyle}>Repeat <span style={{ opacity: 0.5 }}>(optional)</span></div>
+                    <select
+                      value={form.recurring ?? ""}
+                      onChange={(e) => setForm({ ...form, recurring: (e.target.value as Assignment["recurring"]) || undefined })}
+                      style={{ ...inputStyle(false), appearance: "none" as const }}
+                    >
+                      <option value="">Does not repeat</option>
+                      <option value="weekly">Weekly</option>
+                      <option value="fortnightly">Fortnightly</option>
+                      <option value="monthly">Monthly</option>
+                    </select>
+                  </div>
                   <div style={{ display: "flex", gap: "12px", alignItems: "center", marginTop: "4px" }}>
                     <button
                       onClick={handleAddEntry}
@@ -670,7 +819,14 @@ export default function ChapterPage({
             )}
 
             {/* Assignments list */}
-            <div
+            <motion.div
+              key={subjectId}
+              initial="hidden"
+              animate="visible"
+              variants={{
+                hidden: {},
+                visible: { transition: { staggerChildren: 0.045 } },
+              }}
               style={{
                 transition: "transform 0.25s ease, opacity 0.25s ease",
                 transform: showForm ? "translateY(8px)" : "translateY(0)",
@@ -693,14 +849,21 @@ export default function ChapterPage({
                 </p>
               )}
 
-              {displayedAssignments.map((a) => {
+              {displayedAssignments.map((a, i) => {
                 const rel = relativeDueLabel(a.dueDate);
                 const isDone = a.status === "Done";
+                const rot = ((i * 7 + a.id.charCodeAt(0)) % 9) - 4;
 
                 if (editingId === a.id) {
                   return (
-                    <div
+                    <motion.div
                       key={a.id}
+                      variants={{
+                        hidden: { y: -18, rotate: rot, opacity: 0 },
+                        visible: { y: 0, rotate: 0, opacity: 1, transition: { duration: 0.38, ease: [0.34, 1.56, 0.64, 1] } },
+                      }}
+                    >
+                    <div
                       tabIndex={-1}
                       onKeyDown={(e) => { if (e.key === "Escape") setEditingId(null); }}
                       style={{
@@ -786,6 +949,19 @@ export default function ChapterPage({
                             placeholder="e.g. 2h 30m"
                             style={inputStyle(false)}
                           />
+                        </div>
+                        <div>
+                          <div style={labelStyle}>Repeat <span style={{ opacity: 0.5 }}>(optional)</span></div>
+                          <select
+                            value={editForm.recurring ?? ""}
+                            onChange={(e) => setEditForm({ ...editForm, recurring: (e.target.value as Assignment["recurring"]) || undefined })}
+                            style={{ ...inputStyle(false), appearance: "none" as const }}
+                          >
+                            <option value="">Does not repeat</option>
+                            <option value="weekly">Weekly</option>
+                            <option value="fortnightly">Fortnightly</option>
+                            <option value="monthly">Monthly</option>
+                          </select>
                         </div>
 
                         {/* Checkpoint editor */}
@@ -907,28 +1083,67 @@ export default function ChapterPage({
                         </div>
                       </div>
                     </div>
+                    </motion.div>
                   );
                 }
 
                 return (
-                  <div
+                  <motion.div
                     key={a.id}
+                    variants={{
+                      hidden: { y: -18, rotate: rot, opacity: 0 },
+                      visible: { y: 0, rotate: 0, opacity: 1, transition: { duration: 0.38, ease: [0.34, 1.56, 0.64, 1] } },
+                    }}
+                  >
+                  <div
+                    draggable={true}
+                    onDragStart={() => setDraggingId(a.id)}
+                    onDragEnd={() => { setDraggingId(null); }}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => { e.preventDefault(); handleDropOnCard(a.id); }}
                     style={{
                       borderLeft: `3px solid ${subject.colour}`,
                       padding: "12px 14px 12px 16px",
                       marginBottom: "2px",
                       borderBottom: "1px solid rgba(140,100,60,0.1)",
-                      opacity: isDone ? 0.45 : 1,
+                      opacity: draggingId === a.id ? 0.4 : isDone ? 0.45 : 1,
                       background: "transparent",
-                      transition: "background 0.15s",
-                      cursor: "default",
+                      transition: "background 0.15s, transform 0.3s ease-out",
+                      cursor: draggingId === a.id ? "grabbing" : "default",
                       position: "relative",
                     }}
                     onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(140,100,60,0.04)"; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+                    onMouseMove={(e) => {
+                      if (draggingId === a.id || isMobile) return;
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      const dx = (e.clientX - (rect.left + rect.width / 2)) / (rect.width / 2);
+                      const dy = (e.clientY - (rect.top + rect.height / 2)) / (rect.height / 2);
+                      e.currentTarget.style.transform = `perspective(800px) rotateX(${-dy * 3}deg) rotateY(${dx * 3}deg)`;
+                      e.currentTarget.style.transition = "background 0.15s, transform 0.08s ease-out";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = "transparent";
+                      e.currentTarget.style.transform = "perspective(800px) rotateX(0deg) rotateY(0deg)";
+                      e.currentTarget.style.transition = "background 0.15s, transform 0.3s ease-out";
+                    }}
                   >
                     {/* Title row + actions */}
                     <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "8px" }}>
+                      <div
+                        style={{
+                          fontSize: "13px",
+                          color: "var(--ink-light)",
+                          opacity: 0.35,
+                          cursor: "grab",
+                          paddingRight: "8px",
+                          flexShrink: 0,
+                          userSelect: "none",
+                          lineHeight: 1,
+                          alignSelf: "center",
+                        }}
+                      >
+                        ⠿
+                      </div>
                       <div
                         style={{
                           fontFamily: "var(--font-serif)",
@@ -989,7 +1204,7 @@ export default function ChapterPage({
                         {parseLocalDate(a.dueDate).toLocaleDateString("en-NZ", { day: "numeric", month: "short", year: "numeric" })}
                       </span>
                       <button
-                        onClick={(e) => { e.stopPropagation(); handleCycleStatus(a.id, a.status); }}
+                        onClick={(e) => { e.stopPropagation(); handleCycleStatus(a.id); }}
                         style={{
                           fontFamily: "var(--font-hand)",
                           fontSize: "10px",
@@ -1018,6 +1233,19 @@ export default function ChapterPage({
                       {a.estimatedTime && (
                         <span style={{ fontFamily: "var(--font-hand)", fontSize: "10px", color: "var(--ink-light)", marginLeft: "2px" }}>
                           ~ {a.estimatedTime}
+                        </span>
+                      )}
+                      {a.recurring && (
+                        <span
+                          style={{
+                            fontFamily: "var(--font-hand)",
+                            fontSize: "10px",
+                            color: "var(--ink-light)",
+                            opacity: 0.7,
+                          }}
+                          title={`Repeats ${a.recurring}`}
+                        >
+                          ↻ {a.recurring}
                         </span>
                       )}
                     </div>
@@ -1154,10 +1382,44 @@ export default function ChapterPage({
                         </text>
                       </svg>
                     )}
+                    {stampingId === a.id && (
+                      <motion.div
+                        initial={{ scale: 0, opacity: 1 }}
+                        animate={{ scale: [0, 1.15, 1], opacity: [1, 0.85, 0] }}
+                        transition={{ duration: 0.65, times: [0, 0.45, 1], ease: "easeOut" }}
+                        style={{
+                          position: "absolute",
+                          inset: 0,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          pointerEvents: "none",
+                          zIndex: 10,
+                        }}
+                      >
+                        <div
+                          style={{
+                            width: 56,
+                            height: 56,
+                            borderRadius: "50%",
+                            border: "3px solid rgba(70, 110, 50, 0.75)",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            fontFamily: "var(--font-hand)",
+                            fontSize: "26px",
+                            color: "rgba(70, 110, 50, 0.75)",
+                          }}
+                        >
+                          ✓
+                        </div>
+                      </motion.div>
+                    )}
                   </div>
+                  </motion.div>
                 );
               })}
-            </div>
+            </motion.div>
 
             {/* New entry trigger */}
             {!showForm && (
@@ -1176,12 +1438,50 @@ export default function ChapterPage({
                 }}
               >
                 — add a new entry —
+                {!isMobile && (
+                  <span style={{ fontFamily: "var(--font-hand)", fontSize: "9px", color: "var(--ink-light)", opacity: 0.45, marginLeft: "8px" }}>
+                    a — add · esc — close
+                  </span>
+                )}
               </button>
             )}
 
             <div style={{ marginTop: "40px" }}>
               <PageStack />
             </div>
+
+            {isMobile && subjects.length > 1 && (
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "center",
+                  alignItems: "center",
+                  gap: "8px",
+                  padding: "20px 0 8px",
+                }}
+              >
+                {subjects.map((s) => {
+                  const isActive = s.id === subjectId;
+                  return (
+                    <button
+                      key={s.id}
+                      onClick={() => !isActive && !flipping && handleChapterNav(`/journal/${s.id}`)}
+                      style={{
+                        width: isActive ? "20px" : "8px",
+                        height: "8px",
+                        borderRadius: "4px",
+                        background: isActive ? s.colour : "rgba(140,100,60,0.2)",
+                        border: "none",
+                        padding: 0,
+                        cursor: isActive ? "default" : "pointer",
+                        transition: "width 0.2s ease, background 0.2s ease",
+                        flexShrink: 0,
+                      }}
+                    />
+                  );
+                })}
+              </div>
+            )}
           </div>
         </ParchmentPage>
       </motion.div>
@@ -1190,6 +1490,7 @@ export default function ChapterPage({
         subjects={subjects}
         activeSubjectId={subjectId}
         onNavigate={handleTabNavigate}
+        onChapterNav={handleChapterNav}
         urgentIds={urgentIds}
         counts={tabCounts}
       />

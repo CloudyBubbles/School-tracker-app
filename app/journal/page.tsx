@@ -1,12 +1,15 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useIsMobile } from "@/app/hooks/useIsMobile";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { motion, animate } from "framer-motion";
 import { usePageTransition } from "@/app/components/PageTransitionProvider";
 import { loadAssignments, saveAssignments } from "@/app/lib/storage";
+import { cycleAssignmentStatus } from "@/app/lib/assignments";
 import { parseLocalDate } from "@/app/lib/dates";
+import { toDateStr, urgencyColour, PRIORITY_ORDER } from "@/app/lib/utils";
 import { getSubjects, Subject } from "@/app/lib/subjects";
 import { Assignment } from "@/app/types";
 import ParchmentPage from "@/app/components/journal/ParchmentPage";
@@ -27,29 +30,11 @@ function overdueByDays(dateStr: string): string {
   return days === 1 ? "overdue by 1 day" : `overdue by ${days} days`;
 }
 
-function urgencyColour(dateStr: string): string {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const diff = Math.round((parseLocalDate(dateStr).getTime() - today.getTime()) / 86400000);
-  if (diff < 0)  return "#b04040";
-  if (diff <= 2) return "#c06030";
-  if (diff <= 6) return "#c8a050";
-  return "var(--ink-medium)";
-}
-
 function statusStyle(status: string) {
   if (status === "Done") return { background: "rgba(80,160,80,0.15)", color: "#2d7a2d" };
   if (status === "In progress") return { background: "rgba(80,120,200,0.15)", color: "#2d4a9a" };
   return { background: "rgba(140,100,60,0.1)", color: "var(--ink-medium)" };
 }
-
-const STATUS_NEXT: Record<string, string> = {
-  "To do": "In progress",
-  "In progress": "Done",
-  "Done": "To do",
-};
-
-const PRIORITY_ORDER: Record<string, number> = { High: 0, Medium: 1, Low: 2 };
 
 function sortByPriorityThenDate(assignments: Assignment[]): Assignment[] {
   return [...assignments].sort((a, b) => {
@@ -58,10 +43,6 @@ function sortByPriorityThenDate(assignments: Assignment[]): Assignment[] {
     if (pa !== pb) return pa - pb;
     return parseLocalDate(a.dueDate).getTime() - parseLocalDate(b.dueDate).getTime();
   });
-}
-
-function toDateStr(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
 interface QuickForm {
@@ -73,7 +54,10 @@ interface QuickForm {
 export default function TodayPage() {
   const router = useRouter();
   const pageRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const { startTransition, endTransition } = usePageTransition();
+  const [candlelight, setCandlelight] = useState(false);
+  const [sounds, setSounds] = useState(false);
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [subjectIdMap, setSubjectIdMap] = useState<Record<string, string>>({});
   const [overdue, setOverdue] = useState<Assignment[]>([]);
@@ -161,9 +145,52 @@ export default function TodayPage() {
 
   useEffect(() => {
     endTransition();
+    setCandlelight(document.documentElement.classList.contains("candlelight"));
+    setSounds(document.documentElement.classList.contains("sounds-on"));
     loadData();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT") return;
+      if (e.key === "q" || e.key === "Q") {
+        e.preventDefault();
+        setShowQuickAdd((v) => !v);
+      }
+      if (e.key === "/") {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+      }
+      if (e.key === "Escape") {
+        setShowQuickAdd(false);
+        setSearchQuery("");
+        searchInputRef.current?.blur();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
+  const toggleCandlelight = () => {
+    const next = !document.documentElement.classList.contains("candlelight");
+    document.documentElement.classList.toggle("candlelight", next);
+    try { localStorage.setItem("candlelight", String(next)); } catch { /* */ }
+    setCandlelight(next);
+  };
+
+  const toggleSounds = () => {
+    const next = !sounds;
+    setSounds(next);
+    if (next) {
+      document.documentElement.classList.add("sounds-on");
+      try { localStorage.setItem("sounds", "true"); } catch { /* */ }
+    } else {
+      document.documentElement.classList.remove("sounds-on");
+      try { localStorage.setItem("sounds", "false"); } catch { /* */ }
+    }
+  };
 
   const handleClose = async () => {
     if (pageRef.current) {
@@ -218,14 +245,12 @@ export default function TodayPage() {
     loadData();
   };
 
-  const handleCycleStatus = (id: string, current: string) => {
-    const all = loadAssignments();
-    const updated = all.map((a) =>
-      a.id === id ? { ...a, status: STATUS_NEXT[current] as Assignment["status"] } : a
-    );
-    saveAssignments(updated);
+  const handleCycleStatus = (id: string) => {
+    cycleAssignmentStatus(id);
     loadData();
   };
+
+  const isMobile = useIsMobile();
 
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
@@ -264,7 +289,7 @@ export default function TodayPage() {
         style={{ flex: 1, transformOrigin: "left center", transformStyle: "preserve-3d" }}
       >
         <ParchmentPage showLines={false}>
-            <div style={{ maxWidth: "680px", margin: "0 auto", padding: "40px 32px 60px" }}>
+            <div style={{ maxWidth: "680px", margin: "0 auto", padding: isMobile ? "20px 16px 60px" : "40px 32px 60px" }}>
               {isLoading ? (
                 <div style={{ opacity: 0, minHeight: "100vh" }} />
               ) : (
@@ -288,8 +313,9 @@ export default function TodayPage() {
               </button>
 
               {/* Search + Add row */}
-              <div style={{ display: "flex", gap: "8px", marginBottom: "8px", alignItems: "center" }}>
+              <div style={{ display: "flex", gap: "8px", marginBottom: "4px", alignItems: "center" }}>
                 <input
+                  ref={searchInputRef}
                   type="text"
                   value={searchQuery}
                   onChange={(e) => {
@@ -307,6 +333,8 @@ export default function TodayPage() {
                     borderRadius: "3px",
                     color: "var(--ink-dark)",
                     outline: "none",
+                    WebkitTextFillColor: "var(--ink-dark)",
+                    colorScheme: "light" as const,
                   }}
                 />
                 <button
@@ -329,6 +357,11 @@ export default function TodayPage() {
                   {showQuickAdd ? "✕" : "+ add"}
                 </button>
               </div>
+              {!isMobile && (
+                <div style={{ fontFamily: "var(--font-hand)", fontSize: "9px", color: "var(--ink-light)", opacity: 0.5, marginBottom: "8px", textAlign: "right" }}>
+                  q — add · / — search · esc — close
+                </div>
+              )}
 
               {/* Search results */}
               {searchQuery.trim() && !showQuickAdd && (() => {
@@ -537,8 +570,46 @@ export default function TodayPage() {
                 >
                   The Schoolwork Journal
                 </h1>
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: "6px", marginBottom: "4px" }}>
+                  <button
+                    onClick={toggleSounds}
+                    title={sounds ? "Turn sounds off" : "Turn sounds on"}
+                    style={{
+                      background: "transparent",
+                      border: "none",
+                      cursor: "pointer",
+                      fontSize: "15px",
+                      opacity: sounds ? 0.9 : 0.4,
+                      padding: "0 2px",
+                      transition: "opacity 0.2s",
+                    }}
+                  >
+                    🖋
+                  </button>
+                  <button
+                    onClick={toggleCandlelight}
+                    title={candlelight ? "Switch to daylight" : "Switch to candlelight"}
+                    style={{
+                      background: "transparent",
+                      border: "none",
+                      cursor: "pointer",
+                      fontSize: "15px",
+                      opacity: candlelight ? 0.9 : 0.4,
+                      padding: "0 2px",
+                      transition: "opacity 0.2s",
+                    }}
+                  >
+                    🕯
+                  </button>
+                </div>
                 <div style={{ height: "1px", background: "rgba(140,100,60,0.25)", margin: "6px 0 8px" }} />
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                <div style={{
+                  display: "flex",
+                  flexDirection: isMobile ? "column" : "row",
+                  justifyContent: "space-between",
+                  alignItems: isMobile ? "flex-start" : "baseline",
+                  gap: isMobile ? "2px" : "0",
+                }}>
                   <span
                     style={{
                       fontFamily: "var(--font-display)",
@@ -631,7 +702,7 @@ export default function TodayPage() {
                               <div style={{ fontFamily: "var(--font-hand)", fontSize: "10px", color: getColour(a.subject), marginTop: "1px" }}>{a.subject}</div>
                             </div>
                             <button
-                              onClick={(e) => { e.stopPropagation(); handleCycleStatus(a.id, a.status); }}
+                              onClick={(e) => { e.stopPropagation(); handleCycleStatus(a.id); }}
                               style={{
                                 fontFamily: "var(--font-hand)",
                                 fontSize: "10px",
@@ -742,11 +813,16 @@ export default function TodayPage() {
                               due today
                             </div>
                             <button
-                              onClick={(e) => { e.preventDefault(); handleCycleStatus(a.id, a.status); }}
+                              onClick={(e) => { e.preventDefault(); handleCycleStatus(a.id); }}
                               style={{ ...statusStyle(a.status), fontFamily: "var(--font-hand)", fontSize: "10px", padding: "2px 8px", borderRadius: "10px", border: "none", cursor: "pointer", marginTop: "4px", display: "inline-block" }}
                             >
                               {a.status}
                             </button>
+                            {a.recurring && (
+                              <span style={{ fontFamily: "var(--font-hand)", fontSize: "10px", color: "var(--ink-light)", opacity: 0.6, marginLeft: "6px" }}>
+                                ↻
+                              </span>
+                            )}
                           </div>
                         </Link>
                       ))}
@@ -823,11 +899,16 @@ export default function TodayPage() {
                                 {overdueByDays(a.dueDate)}
                               </div>
                               <button
-                                onClick={(e) => { e.preventDefault(); handleCycleStatus(a.id, a.status); }}
+                                onClick={(e) => { e.preventDefault(); handleCycleStatus(a.id); }}
                                 style={{ ...statusStyle(a.status), fontFamily: "var(--font-hand)", fontSize: "10px", padding: "2px 8px", borderRadius: "10px", border: "none", cursor: "pointer", marginTop: "4px", display: "inline-block" }}
                               >
                                 {a.status}
                               </button>
+                              {a.recurring && (
+                                <span style={{ fontFamily: "var(--font-hand)", fontSize: "10px", color: "var(--ink-light)", opacity: 0.6, marginLeft: "6px" }}>
+                                  ↻
+                                </span>
+                              )}
                             </div>
                           </div>
                         </Link>
@@ -897,7 +978,7 @@ export default function TodayPage() {
                                 {formatDate(a.dueDate)}
                               </div>
                               <button
-                                onClick={(e) => { e.preventDefault(); handleCycleStatus(a.id, a.status); }}
+                                onClick={(e) => { e.preventDefault(); handleCycleStatus(a.id); }}
                                 style={{ ...statusStyle(a.status), fontFamily: "var(--font-hand)", fontSize: "10px", padding: "2px 8px", borderRadius: "10px", border: "none", cursor: "pointer", marginTop: "4px", marginLeft: "14px", display: "inline-block" }}
                               >
                                 {a.status}
@@ -945,7 +1026,7 @@ export default function TodayPage() {
                                 {a.subject} · {formatDate(a.dueDate)}
                               </div>
                               <button
-                                onClick={(e) => { e.preventDefault(); handleCycleStatus(a.id, a.status); }}
+                                onClick={(e) => { e.preventDefault(); handleCycleStatus(a.id); }}
                                 style={{ ...statusStyle(a.status), fontFamily: "var(--font-hand)", fontSize: "10px", padding: "2px 8px", borderRadius: "10px", border: "none", cursor: "pointer", marginTop: "4px", display: "inline-block" }}
                               >
                                 {a.status}
@@ -983,6 +1064,27 @@ export default function TodayPage() {
                     );
                   })}
                 </div>
+              )}
+
+              {subjectProgress.length > 0 && (
+                <button
+                  onClick={() => handleTabNavigate("/journal/stats")}
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    fontFamily: "var(--font-serif)",
+                    fontStyle: "italic",
+                    fontSize: "11px",
+                    color: "var(--ink-light)",
+                    cursor: "pointer",
+                    padding: "6px 0 0",
+                    display: "block",
+                    textAlign: "right" as const,
+                    width: "100%",
+                  }}
+                >
+                  view all stats →
+                </button>
               )}
 
               <div style={{ marginTop: "40px" }}>

@@ -25,6 +25,7 @@ export default function ArchivePage() {
   const [grouped, setGrouped] = useState<Group[]>([]);
   const [total, setTotal] = useState(0);
   const [archiveQuery, setArchiveQuery] = useState("");
+  const [tabCounts, setTabCounts] = useState<Record<string, number>>({});
 
   const loadData = () => {
     const subs = getSubjects();
@@ -41,6 +42,13 @@ export default function ArchivePage() {
       }))
       .filter((g) => g.assignments.length > 0);
     setGrouped(groups);
+    const tabCountsMap: Record<string, number> = {};
+    for (const sub of subs) {
+      tabCountsMap[sub.id] = all.filter(
+        (a) => a.status !== "Done" && a.subject.toLowerCase() === sub.name.toLowerCase()
+      ).length;
+    }
+    setTabCounts(tabCountsMap);
   };
 
   useEffect(() => {
@@ -300,6 +308,7 @@ export default function ArchivePage() {
         subjects={subjects}
         activeSubjectId="__archive"
         onNavigate={handleTabNavigate}
+        counts={tabCounts}
       />
     </div>
   );
