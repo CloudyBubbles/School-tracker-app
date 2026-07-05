@@ -10,16 +10,40 @@ import { getSubjects, saveSubjects, Subject } from "@/app/lib/subjects";
 import { usePageTransition } from "@/app/components/PageTransitionProvider";
 import { toRoman } from "@/app/lib/utils";
 import PageStack from "@/app/components/journal/PageStack";
-import { playBookOpen } from "@/app/lib/sounds";
+import RiggedHand, { RiggedHandHandle } from "@/app/components/journal/RiggedHand";
+import { playBookOpen, playBookOpenRitual, playBookCloseRitual } from "@/app/lib/sounds";
 
 const PRESET_COLOURS = [
   "#5b4a8f", "#8b5e2a", "#2d6b4a", "#7a3040",
   "#2d5a8b", "#8b4a2a", "#4a7a4a", "#6b4a7a",
 ];
 
+// Full hand-driven ritual plays once per browser session per direction (open / close).
+// Every open/close after that gets the quick version. Flip either check in
+// `seenThisSession` to `false` to force full every time, or swap sessionStorage for
+// localStorage below to make "seen" permanent across sessions.
+const RITUAL_OPEN_KEY = "schoolwork-ritual-open-seen";
+const RITUAL_CLOSE_KEY = "schoolwork-ritual-close-seen";
+
+function seenThisSession(key: string): boolean {
+  try {
+    return sessionStorage.getItem(key) === "1";
+  } catch {
+    return true; // storage unavailable — default to the quick path, never crash
+  }
+}
+
+function markSeen(key: string) {
+  try { sessionStorage.setItem(key, "1"); } catch { /* */ }
+}
+
 export default function CoverPage() {
   const router = useRouter();
   const coverRef = useRef<HTMLDivElement>(null);
+  const bookRef = useRef<HTMLDivElement>(null);
+  const gripHandRef = useRef<HTMLDivElement>(null);
+  const restHandRef = useRef<HTMLDivElement>(null);
+  const riggedHandRef = useRef<RiggedHandHandle>(null);
   const { startTransition, endTransition } = usePageTransition();
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [stats, setStats] = useState({ total: 0, overdue: 0, done: 0, dueToday: 0 });
@@ -35,19 +59,52 @@ export default function CoverPage() {
   const [sounds, setSounds] = useState(false);
   const [animating, setAnimating] = useState(false);
 
-  const openCover = async () => {
-    if (animating || !coverRef.current) return;
-    setAnimating(true);
+  // Quick open — the original single swing. Rest hand is already resting, no grip stage.
+  const openCoverQuick = async () => {
+    if (!coverRef.current) return;
+    if (restHandRef.current) restHandRef.current.style.opacity = "1";
     if (document.documentElement.classList.contains("sounds-on")) playBookOpen();
     await animate(
       coverRef.current,
       { rotateY: -160 },
       { duration: 0.7, ease: [0.3, 0, 0.3, 1] }
     );
-    setAnimating(false);
   };
 
-  const closeCover = async () => {
+  // Full open ritual — grip hand rides the cover (nested inside the outer face, so it
+  // auto-culls via backfaceVisibility at the exact same instant the leather does), rest
+  // hand crossfades in around the edge-on crossing. Hold -> drag -> hitch -> release -> settle.
+  const openCoverFull = async () => {
+    if (!coverRef.current) return;
+    if (gripHandRef.current) gripHandRef.current.style.opacity = "1";
+    if (restHandRef.current) restHandRef.current.style.opacity = "0";
+    riggedHandRef.current?.grip();
+    if (document.documentElement.classList.contains("sounds-on")) playBookOpenRitual();
+
+    animate(
+      coverRef.current,
+      { rotateY: [0, 0, -18, -75, -80, -160, -152, -160] },
+      {
+        duration: 1.8,
+        times: [0, 0.1, 0.3, 0.55, 0.62, 0.85, 0.94, 1],
+        ease: ["linear", "easeIn", "easeInOut", "linear", "easeOut", "easeInOut", "easeOut"],
+      }
+    );
+
+    // Rest hand fades in right around the edge-on crossing — tune this offset by eye,
+    // it should land the instant the grip hand disappears, not before or after.
+    setTimeout(() => {
+      if (restHandRef.current) {
+        animate(restHandRef.current, { opacity: [0, 1] }, { duration: 0.2, ease: "easeOut" });
+      }
+      riggedHandRef.current?.release();
+    }, 1150);
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 1800));
+  };
+
+  // Quick close — snap shut, no grip-hand stage.
+  const closeCoverQuick = async () => {
     if (!coverRef.current) return;
     await animate(
       coverRef.current,
@@ -56,16 +113,89 @@ export default function CoverPage() {
     );
   };
 
+  // Full close ritual — mirrors openCoverFull in reverse. The grip hand's entrance is an
+  // instant hard cut (backfaceVisibility flips the instant rotateY crosses -90, same as the
+  // cull on open) — it can't be delayed or eased. So unlike the open ritual, where the rest
+  // hand's fade-IN starts at the crossing, here the rest hand's fade-OUT must instead FINISH
+  // exactly at the crossing — otherwise it either overlaps the grip hand's hard appearance
+  // (fade starts at/after crossing) or leaves a gap where neither hand renders (fade starts
+  // too early and completes before the crossing, as a naive t=0 start would).
+  const closeCoverFull = async () => {
+    if (!coverRef.current) return;
+    if (gripHandRef.current) gripHandRef.current.style.opacity = "1";
+    riggedHandRef.current?.grip();
+    if (document.documentElement.classList.contains("sounds-on")) playBookCloseRitual();
+    if (restHandRef.current) {
+      // rotateY crosses -90 (the backface cull point) at ~616ms into this timeline —
+      // start the 200ms fade-out so it lands there. Re-derive both numbers together if
+      // the keyframes/times/duration below change.
+      setTimeout(() => {
+        if (restHandRef.current) {
+          animate(restHandRef.current, { opacity: [1, 0] }, { duration: 0.2, ease: "easeIn" });
+        }
+      }, 416);
+    }
+
+    await animate(
+      coverRef.current,
+      { rotateY: [-160, -160, -152, -80, -75, -18, 0, 0] },
+      {
+        duration: 1.6,
+        times: [0, 0.08, 0.2, 0.45, 0.52, 0.75, 0.92, 1],
+        ease: ["linear", "easeIn", "easeInOut", "linear", "easeOut", "easeInOut", "easeOut"],
+      }
+    );
+  };
+
+  // Trial verdict: full ritual every time, both directions. Quick variants stay defined
+  // above (unused) in case that ever needs revisiting — see ALWAYS_FULL_RITUAL below.
+  const ALWAYS_FULL_RITUAL = true;
+
+  const openCover = async () => {
+    if (animating || !coverRef.current) return;
+    setAnimating(true);
+    if (!ALWAYS_FULL_RITUAL && seenThisSession(RITUAL_OPEN_KEY)) {
+      await openCoverQuick();
+    } else {
+      markSeen(RITUAL_OPEN_KEY);
+      await openCoverFull();
+    }
+    setAnimating(false);
+  };
+
   const handleOpen = async () => {
     if (animating) return;
     setAnimating(true);
-    await closeCover();
+
+    if (!ALWAYS_FULL_RITUAL && seenThisSession(RITUAL_CLOSE_KEY)) {
+      await closeCoverQuick();
+    } else {
+      markSeen(RITUAL_CLOSE_KEY);
+      await closeCoverFull();
+    }
+
+    // Zoom the closed book toward the camera — hand exits with it
+    if (bookRef.current) {
+      animate(
+        bookRef.current,
+        { scale: 4.5 },
+        { duration: 0.55, ease: [0.2, 0, 0.4, 1] }
+      );
+    }
+
+    // Navigate mid-zoom: startTransition overlay cuts in and masks the page swap
+    await new Promise<void>((resolve) => setTimeout(resolve, 280));
     startTransition();
     router.push("/journal");
   };
 
   useEffect(() => {
     endTransition();
+    // If the full ritual is about to play, hide the rest hand from frame 1 instead of
+    // flashing it visible-then-hidden once openCoverFull actually starts.
+    if (!seenThisSession(RITUAL_OPEN_KEY) && restHandRef.current) {
+      restHandRef.current.style.opacity = "0";
+    }
     const t = setTimeout(() => { openCover(); }, 300);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -265,7 +395,7 @@ export default function CoverPage() {
 
       {/* Book wrapper */}
       <div style={{ maxWidth: "380px", width: "100%", padding: "0 24px" }}>
-        <div style={{ position: "relative", margin: "16px" }}>
+        <div ref={bookRef} style={{ position: "relative", margin: "16px", transformOrigin: "center center" }}>
 
           {/* LAYER 1: Interior (parchment, static) */}
           <div
@@ -941,7 +1071,57 @@ export default function CoverPage() {
                 est. 2026
               </p>
             </div>
+
+            {/* Grip hand — child of the cover itself, not a floating layer. Rides the
+                exact same rotateY as the cover and auto-culls via backfaceVisibility at
+                the same instant the leather does. Only shown during the full ritual —
+                openCoverQuick/closeCoverQuick leave this at opacity 0 so it never flashes
+                during a quick open/close. Full 6-piece articulated rig — see
+                RiggedHand's own TODOs for the placeholder-vs-final-asset split. */}
+            <div
+              ref={gripHandRef}
+              style={{
+                position: "absolute",
+                bottom: -16,
+                right: -20,
+                width: 168,
+                pointerEvents: "none",
+                userSelect: "none" as const,
+                zIndex: 10,
+                opacity: 0,
+                filter: "drop-shadow(0 4px 10px rgba(0,0,0,0.45))",
+                backfaceVisibility: "hidden",
+                WebkitBackfaceVisibility: "hidden" as "hidden",
+              }}
+            >
+              <RiggedHand ref={riggedHandRef} />
+            </div>
           </motion.div>
+
+          {/* Rest hand — independent layer, not part of the cover's 3D transform.
+              Visible immediately on the quick path (matches the old always-present
+              behaviour). On the full ritual it starts hidden and crossfades in once
+              the grip hand disappears — see openCoverFull / the mount effect. */}
+          <div
+            ref={restHandRef}
+            style={{
+              position: "absolute",
+              bottom: -16,
+              right: -20,
+              width: 168,
+              pointerEvents: "none",
+              userSelect: "none" as const,
+              zIndex: 10,
+              filter: "drop-shadow(0 4px 10px rgba(0,0,0,0.45))",
+            }}
+          >
+            <img
+              src="/hand.png"
+              alt=""
+              draggable={false}
+              style={{ width: "100%", display: "block", mixBlendMode: "multiply" }}
+            />
+          </div>
 
         </div>
       </div>

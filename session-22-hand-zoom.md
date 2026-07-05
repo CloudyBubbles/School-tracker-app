@@ -115,7 +115,7 @@ Place this **immediately after** the `</motion.div>` closing tag of the cover (L
     src="/hand.png"
     alt=""
     draggable={false}
-    style={{ width: "100%", display: "block" }}
+    style={{ width: "100%", display: "block", mixBlendMode: "multiply" }}
   />
 </div>
 ```
