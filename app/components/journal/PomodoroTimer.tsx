@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
+import { usePomodoro, LinkedTask } from "@/app/lib/pomodoro-context";
+import { logFocusMinutes } from "@/app/lib/db/assignments";
 
 function playBell() {
   try {
@@ -23,11 +25,52 @@ function playBell() {
 
 export default function PomodoroTimer() {
   const pathname = usePathname();
+  const { linkedTask, clearLinkedTask } = usePomodoro();
   const [open, setOpen] = useState(false);
   const totalRef = useRef(25 * 60);
   const [display, setDisplay] = useState({ m: 25, s: 0 });
   const [running, setRunning] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Real running-time accumulator, not "preset − remaining" — stays accurate
+  // even if the preset buttons get clicked mid-session (remaining resets,
+  // this doesn't). Read via a ref inside logAndClear so a stale interval
+  // closure can't log against the wrong (already-switched-away-from) task.
+  const elapsedSecondsRef = useRef(0);
+  const linkedTaskRef = useRef<LinkedTask | null>(null);
+  const prevLinkedTaskRef = useRef<LinkedTask | null>(null);
+  useEffect(() => { linkedTaskRef.current = linkedTask; }, [linkedTask]);
+
+  // Stable across renders (only depends on the already-stable clearLinkedTask)
+  // so it's safe to include in the tick interval's deps below without that
+  // effect tearing down and recreating the interval on every render/tick.
+  const logAndClear = useCallback(() => {
+    const task = linkedTaskRef.current;
+    if (task && elapsedSecondsRef.current > 0) {
+      void logFocusMinutes(task.id, Math.round(elapsedSecondsRef.current / 60)).catch(() => {});
+    }
+    elapsedSecondsRef.current = 0;
+    if (task) clearLinkedTask();
+  }, [clearLinkedTask]);
+
+  // A new task got linked (first link, or switching from a different one
+  // mid-session). If a different task was linked and had elapsed time,
+  // log its partial time before resetting for the new one — so focus time
+  // never silently vanishes when jumping straight from card to card.
+  useEffect(() => {
+    const prev = prevLinkedTaskRef.current;
+    if (linkedTask && linkedTask.id !== prev?.id) {
+      if (prev && elapsedSecondsRef.current > 0) {
+        void logFocusMinutes(prev.id, Math.round(elapsedSecondsRef.current / 60)).catch(() => {});
+      }
+      elapsedSecondsRef.current = 0;
+      totalRef.current = 25 * 60;
+      setDisplay({ m: 25, s: 0 });
+      setOpen(true);
+      setRunning(true);
+    }
+    prevLinkedTaskRef.current = linkedTask;
+  }, [linkedTask]);
 
   useEffect(() => {
     if (!running) {
@@ -36,11 +79,13 @@ export default function PomodoroTimer() {
     }
     const id = setInterval(() => {
       totalRef.current -= 1;
+      elapsedSecondsRef.current += 1;
       if (totalRef.current <= 0) {
         totalRef.current = 0;
         setDisplay({ m: 0, s: 0 });
         setRunning(false);
         playBell();
+        logAndClear();
       } else {
         setDisplay({
           m: Math.floor(totalRef.current / 60),
@@ -50,7 +95,7 @@ export default function PomodoroTimer() {
     }, 1000);
     intervalRef.current = id;
     return () => clearInterval(id);
-  }, [running]);
+  }, [running, logAndClear]);
 
   const setPreset = (mins: number) => {
     setRunning(false);
@@ -59,6 +104,7 @@ export default function PomodoroTimer() {
   };
 
   const handleReset = () => {
+    logAndClear();
     setRunning(false);
     const currentMins = totalRef.current / 60;
     const snappedMins = currentMins === 0
@@ -148,11 +194,21 @@ export default function PomodoroTimer() {
       >
         {/* Header */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
-          <span style={{ fontFamily: "var(--font-hand)", fontSize: "11px", color: "var(--ink-light)" }}>
-            ⏱ Focus Session
+          <span
+            style={{
+              fontFamily: "var(--font-hand)",
+              fontSize: "11px",
+              color: "var(--ink-light)",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+            title={linkedTask ? `Focusing: ${linkedTask.title}` : undefined}
+          >
+            {linkedTask ? `Focusing: ${linkedTask.title}` : "⏱ Focus Session"}
           </span>
           <button
-            onClick={() => setOpen(false)}
+            onClick={() => { logAndClear(); setRunning(false); setOpen(false); }}
             style={{
               background: "transparent",
               border: "none",

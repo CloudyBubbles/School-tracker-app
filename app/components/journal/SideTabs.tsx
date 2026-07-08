@@ -15,6 +15,7 @@ export default function SideTabs({ subjects, activeSubjectId, onNavigate, onChap
   const tabs = [
     { id: "__home", label: "Today", path: "/journal", colour: "#8a6040" },
     ...subjects.map((s) => ({ id: s.id, label: s.name, path: `/journal/${s.id}`, colour: s.colour })),
+    { id: "__assessments", label: "Assessments", path: "/journal/assessments", colour: "#8a6040" },
     { id: "__archive", label: "Archive", path: "/journal/archive", colour: "#8a6040" },
     { id: "__stats", label: "Stats", path: "/journal/stats", colour: "#8a6040" },
   ];

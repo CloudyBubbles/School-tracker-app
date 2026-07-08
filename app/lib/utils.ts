@@ -16,6 +16,21 @@ export function urgencyColour(dateStr: string): string {
 
 export const PRIORITY_ORDER: Record<string, number> = { High: 0, Medium: 1, Low: 2 };
 
+// Same "default to seen, never crash" reasoning as the ritual's seenThisSession
+// in app/page.tsx, but keyed to a calendar date instead of a session boolean —
+// for once-per-day cosmetic grace notes (e.g. the quill-written title).
+export function seenToday(key: string): boolean {
+  try {
+    return localStorage.getItem(key) === toDateStr(new Date());
+  } catch {
+    return true;
+  }
+}
+
+export function markSeenToday(key: string): void {
+  try { localStorage.setItem(key, toDateStr(new Date())); } catch { /* */ }
+}
+
 export function toRoman(n: number): string {
   const vals = [1000,900,500,400,100,90,50,40,10,9,5,4,1];
   const syms = ["M","CM","D","CD","C","XC","L","XL","X","IX","V","IV","I"];

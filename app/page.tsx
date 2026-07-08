@@ -4,13 +4,21 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { motion, animate } from "framer-motion";
+// Backup export/import intentionally stays on the old sync localStorage
+// functions — it's the frozen rollback safety net, decoupled from the live
+// Supabase-backed UI below. Everything else on this page uses the async db
+// layer. Both are imported here on purpose — not an incomplete migration.
 import { loadAssignments, saveAssignments } from "@/app/lib/storage";
+import { getSubjects, saveSubjects } from "@/app/lib/subjects";
+import type { Subject } from "@/app/lib/subjects";
+import { listAssignments, deleteAssignmentsBySubject } from "@/app/lib/db/assignments";
+import { listSubjects, createSubject, deleteSubject } from "@/app/lib/db/subjects";
 import { parseLocalDate } from "@/app/lib/dates";
-import { getSubjects, saveSubjects, Subject } from "@/app/lib/subjects";
 import { usePageTransition } from "@/app/components/PageTransitionProvider";
 import { toRoman } from "@/app/lib/utils";
 import PageStack from "@/app/components/journal/PageStack";
 import RiggedHand, { RiggedHandHandle } from "@/app/components/journal/RiggedHand";
+import QuillTitle from "@/app/components/QuillTitle";
 import { playBookOpen, playBookOpenRitual, playBookCloseRitual } from "@/app/lib/sounds";
 
 const PRESET_COLOURS = [
@@ -225,10 +233,9 @@ export default function CoverPage() {
     }
   };
 
-  const loadStats = () => {
-    const subs = getSubjects();
+  const loadStats = async () => {
+    const [subs, assignments] = await Promise.all([listSubjects(), listAssignments()]);
     setSubjects(subs);
-    const assignments = loadAssignments();
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const overdue = assignments.filter(
@@ -241,21 +248,18 @@ export default function CoverPage() {
     setStats({ total: assignments.length, overdue, done, dueToday });
     const counts: Record<string, number> = {};
     for (const sub of subs) {
-      counts[sub.id] = assignments.filter(
-        (a) => a.subject.toLowerCase() === sub.name.toLowerCase()
-      ).length;
+      counts[sub.id] = assignments.filter((a) => a.subjectId === sub.id).length;
     }
     setSubjectCounts(counts);
     const urgentSubs: Record<string, "overdue" | "today"> = {};
     for (const a of assignments) {
       if (a.status === "Done") continue;
       const due = parseLocalDate(a.dueDate);
-      const subKey = a.subject.toLowerCase();
       if (due < today) {
-        urgentSubs[subKey] = "overdue";
+        urgentSubs[a.subjectId] = "overdue";
       } else if (due.getTime() === today.getTime()) {
-        if (urgentSubs[subKey] !== "overdue") {
-          urgentSubs[subKey] = "today";
+        if (urgentSubs[a.subjectId] !== "overdue") {
+          urgentSubs[a.subjectId] = "today";
         }
       }
     }
@@ -287,7 +291,8 @@ export default function CoverPage() {
         if (data.subjects && Array.isArray(data.subjects)) {
           saveSubjects(data.subjects);
         }
-        loadStats();
+        // Not calling loadStats() here — it now reads Supabase, so it
+        // wouldn't reflect a restore into localStorage anyway.
         setShowBackup(false);
         e.target.value = "";
       } catch {
@@ -298,35 +303,30 @@ export default function CoverPage() {
     reader.readAsText(file);
   };
 
-  const handleRemoveSubject = (id: string) => {
-    const all = loadAssignments();
-    const subjectName = subjects.find((s) => s.id === id)?.name ?? "";
-    const count = all.filter((a) => a.subject.toLowerCase() === subjectName.toLowerCase()).length;
+  const handleRemoveSubject = async (id: string) => {
+    const all = await listAssignments();
+    const count = all.filter((a) => a.subjectId === id).length;
     if (count > 0 && !removeWarning[id]) {
       setRemoveWarning({ ...removeWarning, [id]: `has ${count} entr${count === 1 ? "y" : "ies"}` });
       return;
     }
+    // Must delete assignments before the subject — subject_id has no
+    // ON DELETE CASCADE, so deleting the subject first would FK-violate.
     if (count > 0) {
-      saveAssignments(all.filter((a) => a.subject.toLowerCase() !== subjectName.toLowerCase()));
+      await deleteAssignmentsBySubject(id);
     }
-    const updated = subjects.filter((s) => s.id !== id);
-    saveSubjects(updated);
-    setSubjects(updated);
-    loadStats();
+    await deleteSubject(id);
+    await loadStats();
     const newWarnings = { ...removeWarning };
     delete newWarnings[id];
     setRemoveWarning(newWarnings);
   };
 
-  const handleAddSubject = () => {
+  const handleAddSubject = async () => {
     if (!newSubjectName.trim()) return;
-    const id = newSubjectName.trim().toLowerCase().replace(/\s+/g, "-");
-    if (subjects.find((s) => s.id === id)) return;
-    const newSub: Subject = { id, name: newSubjectName.trim(), colour: newSubjectColour };
-    const updated = [...subjects, newSub];
-    saveSubjects(updated);
-    setSubjects(updated);
-    setSubjectCounts({ ...subjectCounts, [id]: 0 });
+    const newSub = await createSubject({ name: newSubjectName.trim(), colour: newSubjectColour });
+    setSubjects([...subjects, newSub]);
+    setSubjectCounts({ ...subjectCounts, [newSub.id]: 0 });
     setNewSubjectName("");
   };
 
@@ -586,13 +586,13 @@ export default function CoverPage() {
                     >
                       {toRoman(i + 1)}
                     </span>
-                    {urgentSubjects[sub.name.toLowerCase()] && (
+                    {urgentSubjects[sub.id] && (
                       <div
                         style={{
                           width: "5px",
                           height: "5px",
                           borderRadius: "50%",
-                          background: urgentSubjects[sub.name.toLowerCase()] === "overdue" ? "#e06060" : "#c8a050",
+                          background: urgentSubjects[sub.id] === "overdue" ? "#e06060" : "#c8a050",
                           flexShrink: 0,
                           marginRight: "6px",
                           opacity: 0.8,
@@ -621,6 +621,23 @@ export default function CoverPage() {
                   </div>
                 </Link>
               ))}
+            </div>
+
+            {/* Assessments & Milestones — peer to the chapter list, not a chapter itself */}
+            <div style={{ textAlign: "center", marginBottom: "20px" }}>
+              <Link
+                href="/journal/assessments"
+                onClick={() => startTransition()}
+                style={{
+                  fontFamily: "var(--font-hand)",
+                  fontSize: "10px",
+                  color: "var(--ink-light)",
+                  textDecoration: "none",
+                  letterSpacing: "0.05em",
+                }}
+              >
+                🎖 Assessments &amp; Milestones
+              </Link>
             </div>
 
             <PageStack />
@@ -1015,7 +1032,9 @@ export default function CoverPage() {
                   textShadow: "0 1px 4px rgba(0,0,0,0.9), 0 -1px 0 rgba(200,160,80,0.15)",
                 }}
               >
-                SCHOOLWORK
+                <QuillTitle storageKey="schoolwork-title-quill-cover" inkColour="var(--gold)">
+                  SCHOOLWORK
+                </QuillTitle>
               </h1>
 
               {/* Divider rule */}

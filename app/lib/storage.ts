@@ -6,8 +6,18 @@ export const loadAssignments = (): Assignment[] => {
   if (typeof window === "undefined") return [];
   const saved = localStorage.getItem(STORAGE_KEY);
   if (!saved) return [];
-  const parsed = JSON.parse(saved) as Assignment[];
-  return parsed.map((a) => ({ ...a, priority: (a.priority ?? "Medium") as Assignment["priority"] }));
+  let parsed: Assignment[];
+  try {
+    parsed = JSON.parse(saved) as Assignment[];
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  return parsed.map((a) => ({
+    ...a,
+    priority: (a.priority ?? "Medium") as Assignment["priority"],
+    checkpoints: a.checkpoints ?? [],
+  }));
 };
 
 export const saveAssignments = (assignments: Assignment[]) => {

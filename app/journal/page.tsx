@@ -6,15 +6,18 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { motion, animate } from "framer-motion";
 import { usePageTransition } from "@/app/components/PageTransitionProvider";
-import { loadAssignments, saveAssignments } from "@/app/lib/storage";
-import { cycleAssignmentStatus } from "@/app/lib/assignments";
+import { listAssignments, createAssignment, cycleAssignmentStatus } from "@/app/lib/db/assignments";
+import { listSubjects } from "@/app/lib/db/subjects";
 import { parseLocalDate } from "@/app/lib/dates";
 import { toDateStr, urgencyColour, PRIORITY_ORDER } from "@/app/lib/utils";
-import { getSubjects, Subject } from "@/app/lib/subjects";
+import type { Subject } from "@/app/lib/subjects";
+import { usePomodoro } from "@/app/lib/pomodoro-context";
+import { useAuth } from "@/app/lib/auth-context";
 import { Assignment } from "@/app/types";
 import ParchmentPage from "@/app/components/journal/ParchmentPage";
 import PageStack from "@/app/components/journal/PageStack";
 import SideTabs from "@/app/components/journal/SideTabs";
+import QuillTitle from "@/app/components/QuillTitle";
 
 function formatDate(dateStr: string): string {
   return parseLocalDate(dateStr).toLocaleDateString("en-NZ", {
@@ -49,17 +52,33 @@ interface QuickForm {
   subjectId: string;
   title: string;
   dueDate: string;
+  kind: "task" | "assessment";
+  creditValue: string;
+  targetGrade: string;
+  standardCode: string;
 }
+
+const EMPTY_QUICK_FORM: QuickForm = {
+  subjectId: "",
+  title: "",
+  dueDate: "",
+  kind: "task",
+  creditValue: "",
+  targetGrade: "",
+  standardCode: "",
+};
 
 export default function TodayPage() {
   const router = useRouter();
   const pageRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const { startTransition, endTransition } = usePageTransition();
+  const { startFocusSession } = usePomodoro();
+  const { signOut } = useAuth();
   const [candlelight, setCandlelight] = useState(false);
   const [sounds, setSounds] = useState(false);
   const [subjects, setSubjects] = useState<Subject[]>([]);
-  const [subjectIdMap, setSubjectIdMap] = useState<Record<string, string>>({});
+  const [subjectMap, setSubjectMap] = useState<Record<string, Subject>>({});
   const [overdue, setOverdue] = useState<Assignment[]>([]);
   const [dueToday, setDueToday] = useState<Assignment[]>([]);
   const [thisWeek, setThisWeek] = useState<Assignment[]>([]);
@@ -75,18 +94,18 @@ export default function TodayPage() {
   const [allActive, setAllActive] = useState<Assignment[]>([]);
   const [selectedStripDay, setSelectedStripDay] = useState<string | null>(null);
   const [showQuickAdd, setShowQuickAdd] = useState(false);
-  const [quickForm, setQuickForm] = useState<QuickForm>({ subjectId: "", title: "", dueDate: "" });
+  const [quickForm, setQuickForm] = useState<QuickForm>(EMPTY_QUICK_FORM);
   const [quickErrors, setQuickErrors] = useState({ title: false, dueDate: false, subject: false });
   const [searchQuery, setSearchQuery] = useState("");
 
-  const loadData = () => {
-    const subs = getSubjects();
+  const loadData = async () => {
+    const subs = await listSubjects();
     setSubjects(subs);
-    const idMap: Record<string, string> = {};
-    for (const s of subs) idMap[s.name.toLowerCase()] = s.id;
-    setSubjectIdMap(idMap);
+    const subMap: Record<string, Subject> = {};
+    for (const s of subs) subMap[s.id] = s;
+    setSubjectMap(subMap);
 
-    const all = loadAssignments();
+    const all = await listAssignments();
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const in7 = new Date(today);
@@ -117,14 +136,13 @@ export default function TodayPage() {
 
     const urgentSet = new Set<string>();
     for (const a of [...od, ...dt]) {
-      const subId = subs.find((s) => s.name.toLowerCase() === a.subject.toLowerCase())?.id;
-      if (subId) urgentSet.add(subId);
+      urgentSet.add(a.subjectId);
     }
     setUrgentIds([...urgentSet]);
 
     const progress = subs
       .map((sub) => {
-        const subAll = all.filter((a) => a.subject.toLowerCase() === sub.name.toLowerCase());
+        const subAll = all.filter((a) => a.subjectId === sub.id);
         if (subAll.length === 0) return null;
         const done = subAll.filter((a) => a.status === "Done").length;
         return { sub, done, total: subAll.length };
@@ -135,7 +153,7 @@ export default function TodayPage() {
     const tabCountsMap: Record<string, number> = {};
     for (const sub of subs) {
       tabCountsMap[sub.id] = all.filter(
-        (a) => a.status !== "Done" && a.subject.toLowerCase() === sub.name.toLowerCase()
+        (a) => a.status !== "Done" && a.subjectId === sub.id
       ).length;
     }
     setTabCounts(tabCountsMap);
@@ -212,10 +230,11 @@ export default function TodayPage() {
         { duration: 0.13, ease: [0.4, 0, 1, 1] }
       );
     }
+    startTransition();
     router.push(path);
   };
 
-  const handleQuickAdd = () => {
+  const handleQuickAdd = async () => {
     const errors = {
       title: !quickForm.title.trim(),
       dueDate: !quickForm.dueDate,
@@ -227,27 +246,29 @@ export default function TodayPage() {
     }
     const sub = subjects.find((s) => s.id === quickForm.subjectId);
     if (!sub) return;
-    const all = loadAssignments();
-    all.push({
-      id: crypto.randomUUID(),
-      subject: sub.name,
+    const isAssessment = quickForm.kind === "assessment";
+    await createAssignment({
+      subjectId: sub.id,
       title: quickForm.title.trim(),
       dueDate: quickForm.dueDate,
       status: "To do",
       priority: "Medium",
       notes: "",
       checkpoints: [],
+      kind: quickForm.kind,
+      creditValue: isAssessment && quickForm.creditValue ? Number(quickForm.creditValue) : undefined,
+      targetGrade: isAssessment && quickForm.targetGrade ? (quickForm.targetGrade as Assignment["targetGrade"]) : undefined,
+      standardCode: isAssessment && quickForm.standardCode.trim() ? quickForm.standardCode.trim() : undefined,
     });
-    saveAssignments(all);
     setShowQuickAdd(false);
-    setQuickForm({ subjectId: "", title: "", dueDate: "" });
+    setQuickForm(EMPTY_QUICK_FORM);
     setQuickErrors({ title: false, dueDate: false, subject: false });
-    loadData();
+    await loadData();
   };
 
-  const handleCycleStatus = (id: string) => {
-    cycleAssignmentStatus(id);
-    loadData();
+  const handleCycleStatus = async (assignment: Assignment) => {
+    await cycleAssignmentStatus(assignment);
+    await loadData();
   };
 
   const isMobile = useIsMobile();
@@ -261,8 +282,8 @@ export default function TodayPage() {
     month: "long",
   });
 
-  const getColour = (subjectName: string) =>
-    subjects.find((s) => s.name.toLowerCase() === subjectName.toLowerCase())?.colour ?? "#8a6040";
+  const getColour = (subjectId: string) => subjectMap[subjectId]?.colour ?? "#8a6040";
+  const subjectName = (subjectId: string) => subjectMap[subjectId]?.name ?? "";
 
   const sectionLabel = (text: string) => (
     <div
@@ -367,7 +388,7 @@ export default function TodayPage() {
               {searchQuery.trim() && !showQuickAdd && (() => {
                 const q = searchQuery.toLowerCase();
                 const results = allActive.filter(
-                  (a) => a.title.toLowerCase().includes(q) || a.subject.toLowerCase().includes(q)
+                  (a) => a.title.toLowerCase().includes(q) || subjectName(a.subjectId).toLowerCase().includes(q)
                 );
                 return (
                   <div style={{ marginBottom: "16px", borderLeft: "2px solid rgba(140,100,60,0.2)", paddingLeft: "12px" }}>
@@ -378,7 +399,7 @@ export default function TodayPage() {
                     ) : results.map((a) => (
                       <Link
                         key={a.id}
-                        href={`/journal/${subjectIdMap[a.subject.toLowerCase()] ?? "unknown"}`}
+                        href={`/journal/${a.subjectId}`}
                         style={{ textDecoration: "none", display: "block" }}
                         onClick={() => startTransition()}
                       >
@@ -397,7 +418,7 @@ export default function TodayPage() {
                           <div>
                             <div style={{ fontFamily: "var(--font-serif)", fontSize: "13px", color: "var(--ink-dark)" }}>{a.title}</div>
                             <div style={{ fontFamily: "var(--font-hand)", fontSize: "10px", color: urgencyColour(a.dueDate), marginTop: "1px" }}>
-                              {a.subject} · {formatDate(a.dueDate)}
+                              {subjectName(a.subjectId)} · {formatDate(a.dueDate)}
                             </div>
                           </div>
                           <span
@@ -432,11 +453,91 @@ export default function TodayPage() {
                   onKeyDown={(e) => {
                     if (e.key === "Escape") {
                       setShowQuickAdd(false);
-                      setQuickForm({ subjectId: "", title: "", dueDate: "" });
+                      setQuickForm(EMPTY_QUICK_FORM);
                     }
                   }}
                 >
                   <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <div style={{ display: "flex", gap: "0", border: "1px solid rgba(140,100,60,0.25)", borderRadius: "3px", overflow: "hidden", width: "fit-content" }}>
+                      {(["task", "assessment"] as const).map((k) => (
+                        <button
+                          key={k}
+                          type="button"
+                          onClick={() => setQuickForm({ ...quickForm, kind: k })}
+                          style={{
+                            background: quickForm.kind === k ? "rgba(140,100,60,0.18)" : "transparent",
+                            border: "none",
+                            padding: "5px 14px",
+                            fontFamily: "var(--font-serif)",
+                            fontSize: "12px",
+                            color: quickForm.kind === k ? "var(--ink-dark)" : "var(--ink-light)",
+                            cursor: "pointer",
+                            textTransform: "capitalize",
+                          }}
+                        >
+                          {k}
+                        </button>
+                      ))}
+                    </div>
+                    {quickForm.kind === "assessment" && (
+                      <>
+                        <input
+                          type="number"
+                          min="0"
+                          value={quickForm.creditValue}
+                          onChange={(e) => setQuickForm({ ...quickForm, creditValue: e.target.value })}
+                          placeholder="Credits (optional)"
+                          style={{
+                            width: "100%",
+                            padding: "6px 8px",
+                            fontFamily: "var(--font-serif)",
+                            fontSize: "12px",
+                            background: "transparent",
+                            border: "1px solid rgba(140,100,60,0.25)",
+                            borderRadius: "3px",
+                            color: "var(--ink-dark)",
+                            boxSizing: "border-box" as const,
+                          }}
+                        />
+                        <select
+                          value={quickForm.targetGrade}
+                          onChange={(e) => setQuickForm({ ...quickForm, targetGrade: e.target.value })}
+                          style={{
+                            width: "100%",
+                            padding: "6px 8px",
+                            fontFamily: "var(--font-serif)",
+                            fontSize: "12px",
+                            background: "transparent",
+                            border: "1px solid rgba(140,100,60,0.25)",
+                            borderRadius: "3px",
+                            color: "var(--ink-dark)",
+                            appearance: "none",
+                          }}
+                        >
+                          <option value="">Target grade (optional)</option>
+                          <option value="Achieved">Achieved</option>
+                          <option value="Merit">Merit</option>
+                          <option value="Excellence">Excellence</option>
+                        </select>
+                        <input
+                          type="text"
+                          value={quickForm.standardCode}
+                          onChange={(e) => setQuickForm({ ...quickForm, standardCode: e.target.value })}
+                          placeholder="Standard code (optional), e.g. AS91098"
+                          style={{
+                            width: "100%",
+                            padding: "6px 8px",
+                            fontFamily: "var(--font-serif)",
+                            fontSize: "12px",
+                            background: "transparent",
+                            border: "1px solid rgba(140,100,60,0.25)",
+                            borderRadius: "3px",
+                            color: "var(--ink-dark)",
+                            boxSizing: "border-box" as const,
+                          }}
+                        />
+                      </>
+                    )}
                     <div>
                       <select
                         value={quickForm.subjectId}
@@ -523,7 +624,7 @@ export default function TodayPage() {
                       <button
                         onClick={() => {
                           setShowQuickAdd(false);
-                          setQuickForm({ subjectId: "", title: "", dueDate: "" });
+                          setQuickForm(EMPTY_QUICK_FORM);
                         }}
                         style={{
                           background: "transparent",
@@ -568,9 +669,28 @@ export default function TodayPage() {
                     lineHeight: 1.05,
                   }}
                 >
-                  The Schoolwork Journal
+                  <QuillTitle storageKey="schoolwork-title-quill-today" inkColour="var(--ink-dark)">
+                    The Schoolwork Journal
+                  </QuillTitle>
                 </h1>
-                <div style={{ display: "flex", justifyContent: "flex-end", gap: "6px", marginBottom: "4px" }}>
+                <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
+                  <button
+                    onClick={() => signOut()}
+                    title="Sign out"
+                    style={{
+                      background: "transparent",
+                      border: "none",
+                      cursor: "pointer",
+                      fontFamily: "var(--font-serif)",
+                      fontStyle: "italic",
+                      fontSize: "10px",
+                      color: "var(--ink-light)",
+                      opacity: 0.6,
+                      padding: "0 4px",
+                    }}
+                  >
+                    sign out
+                  </button>
                   <button
                     onClick={toggleSounds}
                     title={sounds ? "Turn sounds off" : "Turn sounds on"}
@@ -699,10 +819,10 @@ export default function TodayPage() {
                           <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "5px 0", borderBottom: "1px solid rgba(140,100,60,0.07)" }}>
                             <div>
                               <div style={{ fontFamily: "var(--font-serif)", fontSize: "13px", color: "var(--ink-dark)" }}>{a.title}</div>
-                              <div style={{ fontFamily: "var(--font-hand)", fontSize: "10px", color: getColour(a.subject), marginTop: "1px" }}>{a.subject}</div>
+                              <div style={{ fontFamily: "var(--font-hand)", fontSize: "10px", color: getColour(a.subjectId), marginTop: "1px" }}>{subjectName(a.subjectId)}</div>
                             </div>
                             <button
-                              onClick={(e) => { e.stopPropagation(); handleCycleStatus(a.id); }}
+                              onClick={(e) => { e.stopPropagation(); handleCycleStatus(a); }}
                               style={{
                                 fontFamily: "var(--font-hand)",
                                 fontSize: "10px",
@@ -762,13 +882,13 @@ export default function TodayPage() {
                       {dueToday.map((a) => (
                         <Link
                           key={a.id}
-                          href={`/journal/${subjectIdMap[a.subject.toLowerCase()] ?? "unknown"}`}
+                          href={`/journal/${a.subjectId}`}
                           style={{ textDecoration: "none", display: "block" }}
                           onClick={() => startTransition()}
                         >
                           <div
                             style={{
-                              borderLeft: `3px solid ${getColour(a.subject)}`,
+                              borderLeft: `3px solid ${getColour(a.subjectId)}`,
                               padding: "8px 14px",
                               marginBottom: "8px",
                               background: "rgba(140,100,60,0.06)",
@@ -782,13 +902,13 @@ export default function TodayPage() {
                               style={{
                                 fontFamily: "var(--font-hand)",
                                 fontSize: "9px",
-                                color: `${getColour(a.subject)}cc`,
+                                color: `${getColour(a.subjectId)}cc`,
                                 letterSpacing: "0.15em",
                                 textTransform: "uppercase",
                                 marginBottom: "3px",
                               }}
                             >
-                              {a.subject}
+                              {subjectName(a.subjectId)}
                             </div>
                             <div
                               style={{
@@ -813,11 +933,23 @@ export default function TodayPage() {
                               due today
                             </div>
                             <button
-                              onClick={(e) => { e.preventDefault(); handleCycleStatus(a.id); }}
+                              onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleCycleStatus(a); }}
                               style={{ ...statusStyle(a.status), fontFamily: "var(--font-hand)", fontSize: "10px", padding: "2px 8px", borderRadius: "10px", border: "none", cursor: "pointer", marginTop: "4px", display: "inline-block" }}
                             >
                               {a.status}
                             </button>
+                            <button
+                              onClick={(e) => { e.preventDefault(); e.stopPropagation(); startFocusSession({ id: a.id, title: a.title }); }}
+                              style={{ background: "transparent", border: "none", fontFamily: "var(--font-hand)", fontSize: "10px", color: "var(--ink-light)", cursor: "pointer", padding: 0, marginLeft: "6px" }}
+                              title="Start a focus session for this"
+                            >
+                              ⏱
+                            </button>
+                            {a.kind === "assessment" && (
+                              <span style={{ fontFamily: "var(--font-hand)", fontSize: "10px", color: "var(--ink-light)", marginLeft: "6px" }} title="Assessment">
+                                🎖{a.creditValue ? ` ${a.creditValue}cr` : ""}
+                              </span>
+                            )}
                             {a.recurring && (
                               <span style={{ fontFamily: "var(--font-hand)", fontSize: "10px", color: "var(--ink-light)", opacity: 0.6, marginLeft: "6px" }}>
                                 ↻
@@ -847,13 +979,13 @@ export default function TodayPage() {
                       {overdue.map((a) => (
                         <Link
                           key={a.id}
-                          href={`/journal/${subjectIdMap[a.subject.toLowerCase()] ?? "unknown"}`}
+                          href={`/journal/${a.subjectId}`}
                           style={{ textDecoration: "none", display: "block" }}
                           onClick={() => startTransition()}
                         >
                           <div
                             style={{
-                              borderLeft: `4px solid ${getColour(a.subject)}`,
+                              borderLeft: `4px solid ${getColour(a.subjectId)}`,
                               padding: "10px 14px",
                               marginBottom: "8px",
                               background: "rgba(140,100,60,0.05)",
@@ -868,13 +1000,13 @@ export default function TodayPage() {
                                 style={{
                                   fontFamily: "var(--font-hand)",
                                   fontSize: "9px",
-                                  color: `${getColour(a.subject)}cc`,
+                                  color: `${getColour(a.subjectId)}cc`,
                                   letterSpacing: "0.15em",
                                   textTransform: "uppercase",
                                   marginBottom: "3px",
                                 }}
                               >
-                                {a.subject}
+                                {subjectName(a.subjectId)}
                               </div>
                               <div
                                 style={{
@@ -899,11 +1031,23 @@ export default function TodayPage() {
                                 {overdueByDays(a.dueDate)}
                               </div>
                               <button
-                                onClick={(e) => { e.preventDefault(); handleCycleStatus(a.id); }}
+                                onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleCycleStatus(a); }}
                                 style={{ ...statusStyle(a.status), fontFamily: "var(--font-hand)", fontSize: "10px", padding: "2px 8px", borderRadius: "10px", border: "none", cursor: "pointer", marginTop: "4px", display: "inline-block" }}
                               >
                                 {a.status}
                               </button>
+                              <button
+                                onClick={(e) => { e.preventDefault(); e.stopPropagation(); startFocusSession({ id: a.id, title: a.title }); }}
+                                style={{ background: "transparent", border: "none", fontFamily: "var(--font-hand)", fontSize: "10px", color: "var(--ink-light)", cursor: "pointer", padding: 0, marginLeft: "6px" }}
+                                title="Start a focus session for this"
+                              >
+                                ⏱
+                              </button>
+                              {a.kind === "assessment" && (
+                                <span style={{ fontFamily: "var(--font-hand)", fontSize: "10px", color: "var(--ink-light)", marginLeft: "6px" }} title="Assessment">
+                                  🎖{a.creditValue ? ` ${a.creditValue}cr` : ""}
+                                </span>
+                              )}
                               {a.recurring && (
                                 <span style={{ fontFamily: "var(--font-hand)", fontSize: "10px", color: "var(--ink-light)", opacity: 0.6, marginLeft: "6px" }}>
                                   ↻
@@ -931,7 +1075,7 @@ export default function TodayPage() {
                         {thisWeek.map((a) => (
                           <Link
                             key={a.id}
-                            href={`/journal/${subjectIdMap[a.subject.toLowerCase()] ?? "unknown"}`}
+                            href={`/journal/${a.subjectId}`}
                             style={{ textDecoration: "none" }}
                             onClick={() => startTransition()}
                           >
@@ -949,7 +1093,7 @@ export default function TodayPage() {
                                     width: "6px",
                                     height: "6px",
                                     borderRadius: "50%",
-                                    background: getColour(a.subject),
+                                    background: getColour(a.subjectId),
                                     flexShrink: 0,
                                     marginTop: "5px",
                                   }}
@@ -978,11 +1122,23 @@ export default function TodayPage() {
                                 {formatDate(a.dueDate)}
                               </div>
                               <button
-                                onClick={(e) => { e.preventDefault(); handleCycleStatus(a.id); }}
+                                onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleCycleStatus(a); }}
                                 style={{ ...statusStyle(a.status), fontFamily: "var(--font-hand)", fontSize: "10px", padding: "2px 8px", borderRadius: "10px", border: "none", cursor: "pointer", marginTop: "4px", marginLeft: "14px", display: "inline-block" }}
                               >
                                 {a.status}
                               </button>
+                              <button
+                                onClick={(e) => { e.preventDefault(); e.stopPropagation(); startFocusSession({ id: a.id, title: a.title }); }}
+                                style={{ background: "transparent", border: "none", fontFamily: "var(--font-hand)", fontSize: "10px", color: "var(--ink-light)", cursor: "pointer", padding: 0, marginLeft: "6px" }}
+                                title="Start a focus session for this"
+                              >
+                                ⏱
+                              </button>
+                              {a.kind === "assessment" && (
+                                <span style={{ fontFamily: "var(--font-hand)", fontSize: "10px", color: "var(--ink-light)", marginLeft: "6px" }} title="Assessment">
+                                  🎖{a.creditValue ? ` ${a.creditValue}cr` : ""}
+                                </span>
+                              )}
                             </div>
                           </Link>
                         ))}
@@ -1000,7 +1156,7 @@ export default function TodayPage() {
                             <div style={{ height: "1px", background: "rgba(140,100,60,0.08)" }} />
                           )}
                           <Link
-                            href={`/journal/${subjectIdMap[a.subject.toLowerCase()] ?? "unknown"}`}
+                            href={`/journal/${a.subjectId}`}
                             style={{ textDecoration: "none", display: "block" }}
                             onClick={() => startTransition()}
                           >
@@ -1023,14 +1179,26 @@ export default function TodayPage() {
                                   marginTop: "2px",
                                 }}
                               >
-                                {a.subject} · {formatDate(a.dueDate)}
+                                {subjectName(a.subjectId)} · {formatDate(a.dueDate)}
                               </div>
                               <button
-                                onClick={(e) => { e.preventDefault(); handleCycleStatus(a.id); }}
+                                onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleCycleStatus(a); }}
                                 style={{ ...statusStyle(a.status), fontFamily: "var(--font-hand)", fontSize: "10px", padding: "2px 8px", borderRadius: "10px", border: "none", cursor: "pointer", marginTop: "4px", display: "inline-block" }}
                               >
                                 {a.status}
                               </button>
+                              <button
+                                onClick={(e) => { e.preventDefault(); e.stopPropagation(); startFocusSession({ id: a.id, title: a.title }); }}
+                                style={{ background: "transparent", border: "none", fontFamily: "var(--font-hand)", fontSize: "10px", color: "var(--ink-light)", cursor: "pointer", padding: 0, marginLeft: "6px" }}
+                                title="Start a focus session for this"
+                              >
+                                ⏱
+                              </button>
+                              {a.kind === "assessment" && (
+                                <span style={{ fontFamily: "var(--font-hand)", fontSize: "10px", color: "var(--ink-light)", marginLeft: "6px" }} title="Assessment">
+                                  🎖{a.creditValue ? ` ${a.creditValue}cr` : ""}
+                                </span>
+                              )}
                             </div>
                           </Link>
                         </div>

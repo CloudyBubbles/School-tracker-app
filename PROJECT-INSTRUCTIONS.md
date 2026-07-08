@@ -51,9 +51,13 @@ A personal leather-journal-aesthetic schoolwork tracker built as a passion proje
 
 ## Current state
 
-Sessions 1–25 in progress (this doc had drifted — it said "1–22" and "next up 22" for a while; corrected 2026-07-05). Session files are in the project root as `session-XX-name.md`. Always paste the relevant session file into the chat before starting a build session — it has the exact code changes needed.
+Sessions 1–29 done (corrected 2026-07-08 — this doc had drifted before). Session files are in the project root as `session-XX-name.md`. Always paste the relevant session file into the chat before starting a build session — it has the exact code changes needed.
 
-Recent: session 22 (hand illustration + zoom), 23 (hand-driven open/close ritual, grip/rest hand crossfade), 24 (full-articulation rig plan + 3D research — Track A 2D cutout puppet vs. Track B true-3D, parked), 25 (3D research validated/corrected + a placeholder rig wired into the ritual — see session-25 doc). The real per-finger art (session-24 Track A) still hasn't been sourced — RiggedHand.tsx currently animates debug-tab placeholders over the flat hand.png, not real cut pieces.
+Recent: 22 (hand illustration + zoom), 23 (hand-driven open/close ritual), 24 (full-articulation rig plan + 3D research, Track A vs Track B), 25 (3D research corrected + placeholder rig wired in — real per-finger art still not sourced, RiggedHand.tsx still animates debug-tab placeholders), 26 (assessments tracker page + functional backlog — built), 27 (cosmetic pass, quill-written title — built), 28 (Pomodoro linked to an assignment — plan written, not yet built), 29 (Supabase schema + RLS + auth plan — **done and confirmed live**: `subjects`/`assignments`/`checkpoints` tables created, RLS enabled with policies on all three, in William's own personal Supabase project, not the Produlogic org one).
+
+**No longer localStorage-only** — this doc's opening line is now stale on that point. `@supabase/supabase-js` is installed, `.env.local` + `app/lib/supabase.ts` exist and point at William's personal project. The app's pages still read/write localStorage though — that rewiring is session 30, not done yet.
+
+**Next up: session 30** — one-time migration script (existing JSON export → new tables via real `subject_id` foreign keys) + rewiring every page off `loadAssignments()`/`saveAssignments()` onto real Supabase calls with loading states.
 
 ## Workflow
 

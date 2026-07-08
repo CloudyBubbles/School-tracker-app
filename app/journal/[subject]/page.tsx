@@ -6,11 +6,22 @@ import { useRiffle } from "@/app/lib/riffle-context";
 import { useRouter } from "next/navigation";
 import { motion, animate } from "framer-motion";
 import { usePageTransition } from "@/app/components/PageTransitionProvider";
-import { loadAssignments, saveAssignments, loadChapterNotes, saveChapterNote } from "@/app/lib/storage";
-import { cycleAssignmentStatus } from "@/app/lib/assignments";
+import { loadChapterNotes, saveChapterNote } from "@/app/lib/storage";
+import {
+  listAssignments,
+  createAssignment,
+  updateAssignment,
+  deleteAssignment,
+  toggleCheckpoint,
+  updateSortOrder,
+  clearSortOrder,
+  cycleAssignmentStatus,
+} from "@/app/lib/db/assignments";
+import { listSubjects } from "@/app/lib/db/subjects";
 import { parseLocalDate, relativeDueLabel } from "@/app/lib/dates";
 import { toDateStr, urgencyColour, PRIORITY_ORDER, toRoman } from "@/app/lib/utils";
-import { getSubjects, Subject } from "@/app/lib/subjects";
+import type { Subject } from "@/app/lib/subjects";
+import { usePomodoro } from "@/app/lib/pomodoro-context";
 import { Assignment, Checkpoint } from "@/app/types";
 import ParchmentPage from "@/app/components/journal/ParchmentPage";
 import PageStack from "@/app/components/journal/PageStack";
@@ -37,6 +48,12 @@ const STATUS_COLOR: Record<Assignment["status"], string> = {
   "Done": "#2d7a2d",
 };
 
+const STATUS_NEXT: Record<Assignment["status"], Assignment["status"]> = {
+  "To do": "In progress",
+  "In progress": "Done",
+  "Done": "To do",
+};
+
 function timelineProgress(startDate: string, dueDate: string): number | null {
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const start = parseLocalDate(startDate);
@@ -56,6 +73,10 @@ interface FormState {
   notes: string;
   estimatedTime?: string;
   recurring?: Assignment["recurring"];
+  kind: "task" | "assessment";
+  creditValue: string;
+  targetGrade: string;
+  standardCode: string;
 }
 
 const EMPTY_FORM: FormState = {
@@ -67,6 +88,10 @@ const EMPTY_FORM: FormState = {
   notes: "",
   estimatedTime: "",
   recurring: undefined,
+  kind: "task",
+  creditValue: "",
+  targetGrade: "",
+  standardCode: "",
 };
 
 export default function ChapterPage({
@@ -81,9 +106,11 @@ export default function ChapterPage({
   const { startTransition, endTransition } = usePageTransition();
   const isMobile = useIsMobile();
   const { trigger: triggerRiffle } = useRiffle();
+  const { startFocusSession } = usePomodoro();
 
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [subject, setSubject] = useState<Subject | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
@@ -107,48 +134,24 @@ export default function ChapterPage({
 
   useEffect(() => {
     endTransition();
-    const subs = getSubjects();
-    setSubjects(subs);
-    const idx = subs.findIndex((s) => s.id === subjectId);
-    if (idx === -1) {
-      router.replace("/journal");
-      return;
-    }
-    setSubject(subs[idx]);
-    setChapterIndex(idx + 1);
-    const notes = loadChapterNotes();
-    setPinnedNote(notes[subjectId] ?? "");
-    const all = loadAssignments();
-    const filtered = all
-      .filter((a) => a.subject.toLowerCase() === subs[idx].name.toLowerCase())
-      .sort((a, b) => parseLocalDate(a.dueDate).getTime() - parseLocalDate(b.dueDate).getTime());
-    if (filtered.some((a) => a.order != null)) {
-      setSortMode("custom");
-    }
-    setAssignments(filtered);
-    setEditingId(null);
-    setDeleteConfirmId(null);
-    setShowForm(false);
-    setExpandedNotes(new Set());
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const urgentSet = new Set<string>();
-    for (const a of all) {
-      if (a.status === "Done") continue;
-      const due = parseLocalDate(a.dueDate);
-      if (due <= today) {
-        const subId = subs.find((s) => s.name.toLowerCase() === a.subject.toLowerCase())?.id;
-        if (subId) urgentSet.add(subId);
+    setIsLoading(true);
+    (async () => {
+      const subs = await listSubjects();
+      const idx = subs.findIndex((s) => s.id === subjectId);
+      if (idx === -1) {
+        router.replace("/journal");
+        return;
       }
-    }
-    setUrgentIds([...urgentSet]);
-    const tabCountsMap: Record<string, number> = {};
-    for (const sub of subs) {
-      tabCountsMap[sub.id] = all.filter(
-        (a) => a.status !== "Done" && a.subject.toLowerCase() === sub.name.toLowerCase()
-      ).length;
-    }
-    setTabCounts(tabCountsMap);
+      const notes = loadChapterNotes();
+      setPinnedNote(notes[subjectId] ?? "");
+      setEditingId(null);
+      setDeleteConfirmId(null);
+      setShowForm(false);
+      setExpandedNotes(new Set());
+      await loadData();
+      setIsLoading(false);
+    })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [subjectId, router]);
 
   useEffect(() => {
@@ -170,75 +173,46 @@ export default function ChapterPage({
   }, []);
 
 
-  const refreshAssignments = (all: Assignment[]) => {
-    setAssignments(
-      all
-        .filter((a) => a.subject.toLowerCase() === (subject?.name ?? "").toLowerCase())
-        .sort((a, b) => parseLocalDate(a.dueDate).getTime() - parseLocalDate(b.dueDate).getTime())
-    );
-    const subs = getSubjects();
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const urgentSet = new Set<string>();
-    for (const a of all) {
-      if (a.status === "Done") continue;
-      const due = parseLocalDate(a.dueDate);
-      if (due <= today) {
-        const subId = subs.find((s) => s.name.toLowerCase() === a.subject.toLowerCase())?.id;
-        if (subId) urgentSet.add(subId);
-      }
-    }
-    setUrgentIds([...urgentSet]);
-  };
-
   const handleNoteChange = (val: string) => {
     setPinnedNote(val);
     saveChapterNote(subjectId, val);
   };
 
-  const loadData = () => {
-    const subs = getSubjects();
-    const idx = subs.findIndex((s) => s.id === subjectId);
-    if (idx === -1) return;
-    const all = loadAssignments();
-    const filtered = all.filter(
-      (a) => a.subject.toLowerCase() === subs[idx].name.toLowerCase()
-    );
-    if (filtered.some((a) => a.order != null) && sortMode === "date") {
+  // Shared refetch used by mount and by every mutation handler below — fetches
+  // subjects+assignments together (Promise.all) so subject/assignments state
+  // updates land in the same render, not staggered across an await boundary
+  // (which would otherwise flash "Nothing here yet" between the two).
+  const loadData = async () => {
+    const [subs, all] = await Promise.all([listSubjects(), listAssignments()]);
+    const sub = subs.find((s) => s.id === subjectId);
+    if (!sub) return;
+
+    setSubjects(subs);
+    setSubject(sub);
+    setChapterIndex(subs.findIndex((s) => s.id === subjectId) + 1);
+
+    const filtered = all
+      .filter((a) => a.subjectId === sub.id)
+      .sort((a, b) => parseLocalDate(a.dueDate).getTime() - parseLocalDate(b.dueDate).getTime());
+    if (filtered.some((a) => a.order != null)) {
       setSortMode("custom");
     }
     setAssignments(filtered);
+
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const urgentSet = new Set<string>();
     for (const a of all) {
       if (a.status === "Done") continue;
-      const due = parseLocalDate(a.dueDate);
-      if (due <= today) {
-        const subId = subs.find((s) => s.name.toLowerCase() === a.subject.toLowerCase())?.id;
-        if (subId) urgentSet.add(subId);
-      }
+      if (parseLocalDate(a.dueDate) <= today) urgentSet.add(a.subjectId);
     }
     setUrgentIds([...urgentSet]);
+
     const tabCountsMap: Record<string, number> = {};
-    for (const sub of subs) {
-      tabCountsMap[sub.id] = all.filter(
-        (a) => a.status !== "Done" && a.subject.toLowerCase() === sub.name.toLowerCase()
-      ).length;
+    for (const s of subs) {
+      tabCountsMap[s.id] = all.filter((a) => a.status !== "Done" && a.subjectId === s.id).length;
     }
     setTabCounts(tabCountsMap);
-  };
-
-  const recomputeTabCounts = () => {
-    const allFresh = loadAssignments();
-    const fresh = getSubjects();
-    const counts: Record<string, number> = {};
-    for (const sub of fresh) {
-      counts[sub.id] = allFresh.filter(
-        (a) => a.status !== "Done" && a.subject.toLowerCase() === sub.name.toLowerCase()
-      ).length;
-    }
-    setTabCounts(counts);
   };
 
   const handleClose = async () => {
@@ -261,6 +235,7 @@ export default function ChapterPage({
         { duration: 0.13, ease: [0.4, 0, 1, 1] }
       );
     }
+    startTransition();
     router.push(path);
   };
 
@@ -303,74 +278,85 @@ export default function ChapterPage({
     });
   };
 
-  const handleToggleCheckpoint = (assignmentId: string, checkpointId: string) => {
-    const all = loadAssignments();
-    const updated = all.map((a) =>
-      a.id === assignmentId
-        ? { ...a, checkpoints: a.checkpoints.map((c) => c.id === checkpointId ? { ...c, done: !c.done } : c) }
-        : a
-    );
-    saveAssignments(updated);
-    refreshAssignments(updated);
+  const handleToggleCheckpoint = async (assignmentId: string, checkpointId: string) => {
+    const cp = assignments.find((a) => a.id === assignmentId)?.checkpoints.find((c) => c.id === checkpointId);
+    if (!cp) return;
+    await toggleCheckpoint(checkpointId, !cp.done);
+    await loadData();
   };
 
-  const handleCycleStatus = (assignmentId: string) => {
-    const updated = cycleAssignmentStatus(assignmentId);
-    refreshAssignments(updated);
-    recomputeTabCounts();
-    if (updated.find((a) => a.id === assignmentId)?.status === "Done") {
-      setStampingId(assignmentId);
+  const handleCycleStatus = async (assignment: Assignment) => {
+    const willBeDone = STATUS_NEXT[assignment.status] === "Done";
+    await cycleAssignmentStatus(assignment);
+    await loadData();
+    if (willBeDone) {
+      setStampingId(assignment.id);
       setTimeout(() => setStampingId(null), 700);
     }
   };
 
   const handleOpenEdit = (a: Assignment) => {
     setEditingId(a.id);
-    setEditForm({ title: a.title, startDate: a.startDate ?? "", dueDate: a.dueDate, status: a.status, priority: a.priority, notes: a.notes, estimatedTime: a.estimatedTime ?? "", recurring: a.recurring });
+    setEditForm({
+      title: a.title,
+      startDate: a.startDate ?? "",
+      dueDate: a.dueDate,
+      status: a.status,
+      priority: a.priority,
+      notes: a.notes,
+      estimatedTime: a.estimatedTime ?? "",
+      recurring: a.recurring,
+      kind: a.kind ?? "task",
+      creditValue: a.creditValue != null ? String(a.creditValue) : "",
+      targetGrade: a.targetGrade ?? "",
+      standardCode: a.standardCode ?? "",
+    });
     setEditError({ title: false, dueDate: false });
     setEditCheckpoints([...a.checkpoints]);
     setNewCheckpointInput("");
     setDeleteConfirmId(null);
   };
 
-  const handleSaveEdit = () => {
+  const handleSaveEdit = async () => {
     if (!editingId) return;
     if (!editForm.title.trim() || !editForm.dueDate) {
       setEditError({ title: !editForm.title.trim(), dueDate: !editForm.dueDate });
       return;
     }
-    const all = loadAssignments();
-    const updated = all.map((a) =>
-      a.id === editingId ? { ...a, ...editForm, estimatedTime: editForm.estimatedTime || undefined, checkpoints: editCheckpoints } : a
-    );
-    saveAssignments(updated);
-    refreshAssignments(updated);
-    recomputeTabCounts();
+    const isAssessment = editForm.kind === "assessment";
+    await updateAssignment(editingId, {
+      title: editForm.title,
+      startDate: editForm.startDate || undefined,
+      dueDate: editForm.dueDate,
+      status: editForm.status,
+      priority: editForm.priority,
+      notes: editForm.notes,
+      estimatedTime: editForm.estimatedTime || undefined,
+      recurring: editForm.recurring,
+      checkpoints: editCheckpoints,
+      kind: editForm.kind,
+      creditValue: isAssessment && editForm.creditValue ? Number(editForm.creditValue) : undefined,
+      targetGrade: isAssessment && editForm.targetGrade ? (editForm.targetGrade as Assignment["targetGrade"]) : undefined,
+      standardCode: isAssessment && editForm.standardCode.trim() ? editForm.standardCode.trim() : undefined,
+    });
+    await loadData();
     setEditingId(null);
   };
 
-  const handleDelete = (assignmentId: string) => {
-    const all = loadAssignments();
-    const updated = all.filter((a) => a.id !== assignmentId);
-    saveAssignments(updated);
-    refreshAssignments(updated);
-    recomputeTabCounts();
+  const handleDelete = async (assignmentId: string) => {
+    await deleteAssignment(assignmentId);
+    await loadData();
     setDeleteConfirmId(null);
   };
 
-  const handleSnooze = (id: string, currentDueDate: string) => {
+  const handleSnooze = async (id: string, currentDueDate: string) => {
     const due = parseLocalDate(currentDueDate);
     due.setDate(due.getDate() + 1);
-    const all = loadAssignments();
-    const updated = all.map((a) =>
-      a.id === id ? { ...a, dueDate: toDateStr(due) } : a
-    );
-    saveAssignments(updated);
-    refreshAssignments(updated);
-    recomputeTabCounts();
+    await updateAssignment(id, { dueDate: toDateStr(due) });
+    await loadData();
   };
 
-  const handleDropOnCard = (targetId: string) => {
+  const handleDropOnCard = async (targetId: string) => {
     if (!draggingId || draggingId === targetId) return;
     const reordered = [...displayedAssignments];
     const fromIdx = reordered.findIndex((a) => a.id === draggingId);
@@ -378,26 +364,23 @@ export default function ChapterPage({
     if (fromIdx === -1 || toIdx === -1) return;
     const [moved] = reordered.splice(fromIdx, 1);
     reordered.splice(toIdx, 0, moved);
-    const withOrder = reordered.map((a, i) => ({ ...a, order: i }));
-    const all = loadAssignments();
-    const orderMap = Object.fromEntries(withOrder.map((a) => [a.id, a.order]));
-    const merged = all.map((a) => (a.id in orderMap ? { ...a, order: orderMap[a.id] } : a));
-    saveAssignments(merged);
+    const withOrder = reordered.map((a, i) => ({ id: a.id, order: i }));
+    await updateSortOrder(withOrder);
     setSortMode("custom");
     setDraggingId(null);
-    loadData();
+    await loadData();
   };
 
-  const handleAddEntry = () => {
+  const handleAddEntry = async () => {
     const errors = { title: !form.title.trim(), dueDate: !form.dueDate };
     if (errors.title || errors.dueDate) {
       setFormErrors(errors);
       return;
     }
     if (!subject) return;
-    const newA: Assignment = {
-      id: crypto.randomUUID(),
-      subject: subject.name,
+    const isAssessment = form.kind === "assessment";
+    await createAssignment({
+      subjectId: subject.id,
       title: form.title.trim(),
       startDate: form.startDate || undefined,
       dueDate: form.dueDate,
@@ -407,12 +390,12 @@ export default function ChapterPage({
       checkpoints: [],
       estimatedTime: form.estimatedTime || undefined,
       recurring: form.recurring || undefined,
-    };
-    const all = loadAssignments();
-    const updated = [...all, newA];
-    saveAssignments(updated);
-    refreshAssignments(updated);
-    recomputeTabCounts();
+      kind: form.kind,
+      creditValue: isAssessment && form.creditValue ? Number(form.creditValue) : undefined,
+      targetGrade: isAssessment && form.targetGrade ? (form.targetGrade as Assignment["targetGrade"]) : undefined,
+      standardCode: isAssessment && form.standardCode.trim() ? form.standardCode.trim() : undefined,
+    });
+    await loadData();
     setForm(EMPTY_FORM);
     setFormErrors({ title: false, dueDate: false });
     setShowForm(false);
@@ -474,8 +457,6 @@ export default function ChapterPage({
     ? sortedAssignments
     : sortedAssignments.filter((a) => a.status !== "Done");
 
-  if (!subject) return null;
-
   return (
     <div
       style={{ display: "flex", minHeight: "100vh", transformStyle: "preserve-3d" }}
@@ -492,6 +473,10 @@ export default function ChapterPage({
       >
         <ParchmentPage showLines>
           <div style={{ maxWidth: "680px", margin: "0 auto", padding: isMobile ? "20px 16px 60px" : "40px 32px 60px" }}>
+            {isLoading || !subject ? (
+              <div style={{ opacity: 0, minHeight: "100vh" }} />
+            ) : (
+            <>
             {/* Close button */}
             <button
               onClick={handleClose}
@@ -603,12 +588,10 @@ export default function ChapterPage({
               <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
                 <span style={{ fontFamily: "var(--font-hand)", fontSize: "9px", color: "var(--ink-light)", opacity: 0.7 }}>sort:</span>
                 <button
-                  onClick={() => {
+                  onClick={async () => {
                     if (sortMode === "custom") {
-                      const all = loadAssignments();
-                      const cleared = all.map((a) => a.subject.toLowerCase() === subject.name.toLowerCase() ? { ...a, order: undefined } : a);
-                      saveAssignments(cleared);
-                      loadData();
+                      await clearSortOrder(subject.id);
+                      await loadData();
                     }
                     setSortMode("date");
                   }}
@@ -628,12 +611,10 @@ export default function ChapterPage({
                 </button>
                 <span style={{ fontFamily: "var(--font-hand)", fontSize: "9px", color: "var(--ink-light)", opacity: 0.5 }}>/</span>
                 <button
-                  onClick={() => {
+                  onClick={async () => {
                     if (sortMode === "custom") {
-                      const all = loadAssignments();
-                      const cleared = all.map((a) => a.subject.toLowerCase() === subject.name.toLowerCase() ? { ...a, order: undefined } : a);
-                      saveAssignments(cleared);
-                      loadData();
+                      await clearSortOrder(subject.id);
+                      await loadData();
                     }
                     setSortMode("priority");
                   }}
@@ -694,6 +675,68 @@ export default function ChapterPage({
                   </div>
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                  <div>
+                    <div style={labelStyle}>Type</div>
+                    <div style={{ display: "flex", gap: "0", border: "1px solid rgba(140,100,60,0.3)", borderRadius: "3px", overflow: "hidden", width: "fit-content" }}>
+                      {(["task", "assessment"] as const).map((k) => (
+                        <button
+                          key={k}
+                          type="button"
+                          onClick={() => setForm({ ...form, kind: k })}
+                          style={{
+                            background: form.kind === k ? "rgba(140,100,60,0.18)" : "transparent",
+                            border: "none",
+                            padding: "6px 14px",
+                            fontFamily: "var(--font-serif)",
+                            fontSize: "12px",
+                            color: form.kind === k ? "var(--ink-dark)" : "var(--ink-light)",
+                            cursor: "pointer",
+                            textTransform: "capitalize",
+                          }}
+                        >
+                          {k}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  {form.kind === "assessment" && (
+                    <>
+                      <div>
+                        <div style={labelStyle}>Credits <span style={{ opacity: 0.5 }}>(optional)</span></div>
+                        <input
+                          type="number"
+                          min="0"
+                          value={form.creditValue}
+                          onChange={(e) => setForm({ ...form, creditValue: e.target.value })}
+                          placeholder="e.g. 4"
+                          style={inputStyle(false)}
+                        />
+                      </div>
+                      <div>
+                        <div style={labelStyle}>Target Grade <span style={{ opacity: 0.5 }}>(optional)</span></div>
+                        <select
+                          value={form.targetGrade}
+                          onChange={(e) => setForm({ ...form, targetGrade: e.target.value })}
+                          style={{ ...inputStyle(false), appearance: "none" as const }}
+                        >
+                          <option value="">Not set</option>
+                          <option value="Achieved">Achieved</option>
+                          <option value="Merit">Merit</option>
+                          <option value="Excellence">Excellence</option>
+                        </select>
+                      </div>
+                      <div>
+                        <div style={labelStyle}>Standard Code <span style={{ opacity: 0.5 }}>(optional)</span></div>
+                        <input
+                          type="text"
+                          value={form.standardCode}
+                          onChange={(e) => setForm({ ...form, standardCode: e.target.value })}
+                          placeholder="e.g. AS91098"
+                          style={inputStyle(false)}
+                        />
+                      </div>
+                    </>
+                  )}
                   <div>
                     <div style={labelStyle}>Title</div>
                     <input
@@ -875,6 +918,68 @@ export default function ChapterPage({
                       }}
                     >
                       <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                        <div>
+                          <div style={labelStyle}>Type</div>
+                          <div style={{ display: "flex", gap: "0", border: "1px solid rgba(140,100,60,0.3)", borderRadius: "3px", overflow: "hidden", width: "fit-content" }}>
+                            {(["task", "assessment"] as const).map((k) => (
+                              <button
+                                key={k}
+                                type="button"
+                                onClick={() => setEditForm({ ...editForm, kind: k })}
+                                style={{
+                                  background: editForm.kind === k ? "rgba(140,100,60,0.18)" : "transparent",
+                                  border: "none",
+                                  padding: "6px 14px",
+                                  fontFamily: "var(--font-serif)",
+                                  fontSize: "12px",
+                                  color: editForm.kind === k ? "var(--ink-dark)" : "var(--ink-light)",
+                                  cursor: "pointer",
+                                  textTransform: "capitalize",
+                                }}
+                              >
+                                {k}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        {editForm.kind === "assessment" && (
+                          <>
+                            <div>
+                              <div style={labelStyle}>Credits <span style={{ opacity: 0.5 }}>(optional)</span></div>
+                              <input
+                                type="number"
+                                min="0"
+                                value={editForm.creditValue}
+                                onChange={(e) => setEditForm({ ...editForm, creditValue: e.target.value })}
+                                placeholder="e.g. 4"
+                                style={inputStyle(false)}
+                              />
+                            </div>
+                            <div>
+                              <div style={labelStyle}>Target Grade <span style={{ opacity: 0.5 }}>(optional)</span></div>
+                              <select
+                                value={editForm.targetGrade}
+                                onChange={(e) => setEditForm({ ...editForm, targetGrade: e.target.value })}
+                                style={{ ...inputStyle(false), appearance: "none" as const }}
+                              >
+                                <option value="">Not set</option>
+                                <option value="Achieved">Achieved</option>
+                                <option value="Merit">Merit</option>
+                                <option value="Excellence">Excellence</option>
+                              </select>
+                            </div>
+                            <div>
+                              <div style={labelStyle}>Standard Code <span style={{ opacity: 0.5 }}>(optional)</span></div>
+                              <input
+                                type="text"
+                                value={editForm.standardCode}
+                                onChange={(e) => setEditForm({ ...editForm, standardCode: e.target.value })}
+                                placeholder="e.g. AS91098"
+                                style={inputStyle(false)}
+                              />
+                            </div>
+                          </>
+                        )}
                         <div>
                           <div style={labelStyle}>Title</div>
                           <input
@@ -1175,6 +1280,15 @@ export default function ChapterPage({
                                 snooze
                               </button>
                             )}
+                            {!isDone && (
+                              <button
+                                onClick={() => startFocusSession({ id: a.id, title: a.title })}
+                                style={linkBtnStyle}
+                                title="Start a focus session for this"
+                              >
+                                focus
+                              </button>
+                            )}
                             <button onClick={() => handleOpenEdit(a)} style={linkBtnStyle}>edit</button>
                             <button
                               onClick={() => { setDeleteConfirmId(a.id); setEditingId(null); }}
@@ -1199,12 +1313,20 @@ export default function ChapterPage({
                         }}
                         title={`${a.priority} priority`}
                       />
+                      {a.kind === "assessment" && (
+                        <span
+                          style={{ fontFamily: "var(--font-hand)", fontSize: "10px", color: "var(--ink-light)" }}
+                          title={a.standardCode ? `Assessment · ${a.standardCode}` : "Assessment"}
+                        >
+                          🎖{a.creditValue ? ` ${a.creditValue}cr` : ""}
+                        </span>
+                      )}
                       <span style={{ fontFamily: "var(--font-hand)", fontSize: "12px", color: isDone ? "var(--ink-light)" : urgencyColour(a.dueDate) }}>
                         {rel ? `${rel} · ` : ""}
                         {parseLocalDate(a.dueDate).toLocaleDateString("en-NZ", { day: "numeric", month: "short", year: "numeric" })}
                       </span>
                       <button
-                        onClick={(e) => { e.stopPropagation(); handleCycleStatus(a.id); }}
+                        onClick={(e) => { e.stopPropagation(); handleCycleStatus(a); }}
                         style={{
                           fontFamily: "var(--font-hand)",
                           fontSize: "10px",
@@ -1481,6 +1603,8 @@ export default function ChapterPage({
                   );
                 })}
               </div>
+            )}
+            </>
             )}
           </div>
         </ParchmentPage>

@@ -35,6 +35,13 @@ detail:
   I'm not fully certain which is right (licensing pages change and I'm reading marketing copy,
   not a contract), so don't take either as gospel — check Meshy's own licensing page directly
   before this matters for anything real. For a personal project it's a non-issue either way.
+- **Correction (hands-on, 2026-07-06)**: William checked both Meshy and Tripo3D directly —
+  both require payment to actually *export* a generated model, free tier or not. This makes
+  the licensing question above close to moot; the real gate is cost, not attribution. Updates
+  the read on Track B from "free/low-cost path identified" (session 24) to "generation might
+  be free, export isn't — factor a real cost in before treating this as a cheap option."
+  Doesn't change the recommendation (still parked behind Track A), just corrects *why* it'd
+  cost something if it ever gets picked up.
 - **React Three Fiber integration**: confirmed real, confirmed non-trivial, confirmed no
   shortcut. You'd load the GLB via `useLoader(GLTFLoader, ...)` (or generate a typed component
   with `gltfjsx`), drive bone rotations either through baked animation clips or manually in a

@@ -4,9 +4,10 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { animate, motion } from "framer-motion";
 import { usePageTransition } from "@/app/components/PageTransitionProvider";
-import { loadAssignments, saveAssignments } from "@/app/lib/storage";
+import { listAssignments, updateAssignment } from "@/app/lib/db/assignments";
+import { listSubjects } from "@/app/lib/db/subjects";
 import { parseLocalDate } from "@/app/lib/dates";
-import { getSubjects, Subject } from "@/app/lib/subjects";
+import type { Subject } from "@/app/lib/subjects";
 import { Assignment } from "@/app/types";
 import ParchmentPage from "@/app/components/journal/ParchmentPage";
 import PageStack from "@/app/components/journal/PageStack";
@@ -26,18 +27,18 @@ export default function ArchivePage() {
   const [total, setTotal] = useState(0);
   const [archiveQuery, setArchiveQuery] = useState("");
   const [tabCounts, setTabCounts] = useState<Record<string, number>>({});
+  const [isLoading, setIsLoading] = useState(true);
 
-  const loadData = () => {
-    const subs = getSubjects();
+  const loadData = async () => {
+    const [subs, all] = await Promise.all([listSubjects(), listAssignments()]);
     setSubjects(subs);
-    const all = loadAssignments();
     const done = all.filter((a) => a.status === "Done");
     setTotal(done.length);
     const groups: Group[] = subs
       .map((sub) => ({
         subject: sub,
         assignments: done
-          .filter((a) => a.subject.toLowerCase() === sub.name.toLowerCase())
+          .filter((a) => a.subjectId === sub.id)
           .sort((a, b) => parseLocalDate(b.dueDate).getTime() - parseLocalDate(a.dueDate).getTime()),
       }))
       .filter((g) => g.assignments.length > 0);
@@ -45,10 +46,11 @@ export default function ArchivePage() {
     const tabCountsMap: Record<string, number> = {};
     for (const sub of subs) {
       tabCountsMap[sub.id] = all.filter(
-        (a) => a.status !== "Done" && a.subject.toLowerCase() === sub.name.toLowerCase()
+        (a) => a.status !== "Done" && a.subjectId === sub.id
       ).length;
     }
     setTabCounts(tabCountsMap);
+    setIsLoading(false);
   };
 
   useEffect(() => {
@@ -73,16 +75,13 @@ export default function ArchivePage() {
     if (pageRef.current) {
       await animate(pageRef.current, { opacity: 0, x: -10 }, { duration: 0.13 });
     }
+    startTransition();
     router.push(path);
   };
 
-  const handleRestore = (id: string) => {
-    const all = loadAssignments();
-    const updated = all.map((a) =>
-      a.id === id ? { ...a, status: "To do" as const } : a
-    );
-    saveAssignments(updated);
-    loadData();
+  const handleRestore = async (id: string) => {
+    await updateAssignment(id, { status: "To do" });
+    await loadData();
   };
 
   return (
@@ -96,6 +95,10 @@ export default function ArchivePage() {
       >
         <ParchmentPage showLines={false}>
           <div style={{ maxWidth: "680px", margin: "0 auto", padding: "40px 32px 60px" }}>
+            {isLoading ? (
+              <div style={{ opacity: 0, minHeight: "100vh" }} />
+            ) : (
+            <>
             {/* Close button */}
             <button
               onClick={handleClose}
@@ -300,6 +303,8 @@ export default function ArchivePage() {
             <div style={{ marginTop: "40px" }}>
               <PageStack />
             </div>
+            </>
+            )}
           </div>
         </ParchmentPage>
       </motion.div>

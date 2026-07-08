@@ -4,9 +4,10 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { animate, motion } from "framer-motion";
 import { usePageTransition } from "@/app/components/PageTransitionProvider";
-import { loadAssignments } from "@/app/lib/storage";
+import { listAssignments } from "@/app/lib/db/assignments";
+import { listSubjects } from "@/app/lib/db/subjects";
 import { parseLocalDate } from "@/app/lib/dates";
-import { getSubjects, Subject } from "@/app/lib/subjects";
+import type { Subject } from "@/app/lib/subjects";
 import { toDateStr } from "@/app/lib/utils";
 import { Assignment } from "@/app/types";
 import ParchmentPage from "@/app/components/journal/ParchmentPage";
@@ -39,8 +40,15 @@ function calcBestStreak(dates: string[]): number {
   return best;
 }
 
-interface SubjectBreakdown { sub: Subject; done: number; total: number; }
+interface SubjectBreakdown { sub: Subject; done: number; total: number; focusMinutes: number; }
 interface HeatmapDay { ds: string; count: number; }
+
+function formatFocusTime(minutes: number): string {
+  if (minutes < 60) return `${minutes}m`;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return m === 0 ? `${h}h` : `${h}h ${m}m`;
+}
 
 export default function StatsPage() {
   const router = useRouter();
@@ -49,20 +57,27 @@ export default function StatsPage() {
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [tabCounts, setTabCounts] = useState<Record<string, number>>({});
   const [totalDone, setTotalDone] = useState(0);
+  const [totalFocusMinutes, setTotalFocusMinutes] = useState(0);
   const [currentStreak, setCurrentStreak] = useState(0);
   const [bestStreak, setBestStreak] = useState(0);
   const [subjectBreakdown, setSubjectBreakdown] = useState<SubjectBreakdown[]>([]);
   const [heatmap, setHeatmap] = useState<HeatmapDay[]>([]);
   const [recentCompletions, setRecentCompletions] = useState<Assignment[]>([]);
+  const [subjectMap, setSubjectMap] = useState<Record<string, Subject>>({});
+  const [isLoading, setIsLoading] = useState(true);
   const [todayStr] = useState(() => toDateStr(new Date()));
 
   useEffect(() => {
     endTransition();
-    const subs = getSubjects();
+    (async () => {
+    const [subs, all] = await Promise.all([listSubjects(), listAssignments()]);
     setSubjects(subs);
+    const subMap: Record<string, Subject> = {};
+    for (const s of subs) subMap[s.id] = s;
+    setSubjectMap(subMap);
 
-    const all = loadAssignments();
     setTotalDone(all.filter((a) => a.status === "Done").length);
+    setTotalFocusMinutes(all.reduce((sum, a) => sum + (a.focusMinutes ?? 0), 0));
 
     const completedWithDate = all
       .filter((a) => a.completedAt)
@@ -75,8 +90,13 @@ export default function StatsPage() {
 
     setSubjectBreakdown(
       subs.map((sub) => {
-        const subAll = all.filter((a) => a.subject.toLowerCase() === sub.name.toLowerCase());
-        return { sub, done: subAll.filter((a) => a.status === "Done").length, total: subAll.length };
+        const subAll = all.filter((a) => a.subjectId === sub.id);
+        return {
+          sub,
+          done: subAll.filter((a) => a.status === "Done").length,
+          total: subAll.length,
+          focusMinutes: subAll.reduce((sum, a) => sum + (a.focusMinutes ?? 0), 0),
+        };
       }).filter((s) => s.total > 0)
     );
 
@@ -95,10 +115,12 @@ export default function StatsPage() {
     const tabCountsMap: Record<string, number> = {};
     for (const sub of subs) {
       tabCountsMap[sub.id] = all.filter(
-        (a) => a.status !== "Done" && a.subject.toLowerCase() === sub.name.toLowerCase()
+        (a) => a.status !== "Done" && a.subjectId === sub.id
       ).length;
     }
     setTabCounts(tabCountsMap);
+    setIsLoading(false);
+    })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -154,7 +176,9 @@ export default function StatsPage() {
             </h1>
             <div style={{ height: "1px", background: "rgba(140,100,60,0.2)", marginBottom: "24px" }} />
 
-            {totalDone === 0 ? (
+            {isLoading ? (
+              <div style={{ opacity: 0, minHeight: "100vh" }} />
+            ) : totalDone === 0 ? (
               <p style={{ fontFamily: "var(--font-serif)", fontStyle: "italic", fontSize: "13px", color: "var(--ink-light)", textAlign: "center", marginTop: "48px" }}>
                 No completed assignments yet — they&apos;ll appear here once you&apos;ve crossed one off.
               </p>
@@ -186,6 +210,14 @@ export default function StatsPage() {
                       best streak
                     </div>
                   </div>
+                  <div style={{ textAlign: "center" }}>
+                    <div style={{ fontFamily: "var(--font-display)", fontSize: "40px", color: "var(--ink-medium)", lineHeight: 1 }}>
+                      {formatFocusTime(totalFocusMinutes)}
+                    </div>
+                    <div style={{ fontFamily: "var(--font-hand)", fontSize: "11px", color: "var(--ink-light)", marginTop: "4px" }}>
+                      focus time
+                    </div>
+                  </div>
                 </div>
 
                 <div style={{ height: "1px", background: "rgba(140,100,60,0.15)", marginBottom: "20px" }} />
@@ -196,7 +228,7 @@ export default function StatsPage() {
                     <div style={{ fontFamily: "var(--font-hand)", fontSize: "10px", color: "var(--ink-light)", letterSpacing: "0.08em", marginBottom: "12px" }}>
                       by subject
                     </div>
-                    {subjectBreakdown.map(({ sub, done, total }) => {
+                    {subjectBreakdown.map(({ sub, done, total, focusMinutes }) => {
                       const pct = Math.round((done / total) * 100);
                       return (
                         <div key={sub.id} style={{ marginBottom: "8px" }}>
@@ -206,6 +238,7 @@ export default function StatsPage() {
                             </span>
                             <span style={{ fontFamily: "var(--font-hand)", fontSize: "11px", color: "var(--ink-light)" }}>
                               {done} / {total}
+                              {focusMinutes > 0 ? ` · ${formatFocusTime(focusMinutes)}` : ""}
                             </span>
                           </div>
                           <div style={{ height: "3px", background: "rgba(140,100,60,0.1)", borderRadius: "2px", overflow: "hidden" }}>
@@ -255,7 +288,7 @@ export default function StatsPage() {
                           {a.title}
                         </div>
                         <div style={{ fontFamily: "var(--font-hand)", fontSize: "11px", color: "var(--ink-light)", marginTop: "2px" }}>
-                          due {parseLocalDate(a.dueDate).toLocaleDateString("en-NZ", { day: "numeric", month: "short" })} · {a.subject}
+                          due {parseLocalDate(a.dueDate).toLocaleDateString("en-NZ", { day: "numeric", month: "short" })} · {subjectMap[a.subjectId]?.name ?? ""}
                         </div>
                       </div>
                     ))}

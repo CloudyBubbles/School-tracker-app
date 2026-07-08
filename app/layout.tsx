@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { PageTransitionProvider } from "@/app/components/PageTransitionProvider";
+import { PomodoroProvider } from "@/app/lib/pomodoro-context";
+import { AuthProvider } from "@/app/lib/auth-context";
 import RiffleOverlay from "@/app/components/RiffleOverlay";
 import PomodoroTimer from "@/app/components/journal/PomodoroTimer";
 import SoundManager from "@/app/components/SoundManager";
@@ -16,7 +18,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="h-full" style={{ colorScheme: "light" }}>
+    <html lang="en" className="h-full" style={{ colorScheme: "light" }} suppressHydrationWarning>
       <head>
         <script
           dangerouslySetInnerHTML={{
@@ -31,15 +33,17 @@ export default function RootLayout({
         />
       </head>
       <body className="min-h-full flex flex-col">
-        <div style={{ perspective: "1200px", perspectiveOrigin: "center center" }}>
-          <RiffleOverlay>
-            <PageTransitionProvider>
-              {children}
-            </PageTransitionProvider>
-          </RiffleOverlay>
-        </div>
-        <PomodoroTimer />
-        <SoundManager />
+        <PomodoroProvider>
+          <div style={{ perspective: "1200px", perspectiveOrigin: "center center" }}>
+            <RiffleOverlay>
+              <PageTransitionProvider>
+                <AuthProvider>{children}</AuthProvider>
+              </PageTransitionProvider>
+            </RiffleOverlay>
+          </div>
+          <PomodoroTimer />
+          <SoundManager />
+        </PomodoroProvider>
       </body>
     </html>
   );

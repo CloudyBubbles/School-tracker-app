@@ -16,7 +16,13 @@ const DEFAULT_SUBJECTS: Subject[] = [
 export function getSubjects(): Subject[] {
   if (typeof window === "undefined") return DEFAULT_SUBJECTS;
   const raw = localStorage.getItem(SUBJECTS_KEY);
-  const saved: Subject[] | null = raw ? (JSON.parse(raw) as Subject[]) : null;
+  let saved: Subject[] | null = null;
+  try {
+    saved = raw ? (JSON.parse(raw) as Subject[]) : null;
+  } catch {
+    saved = null;
+  }
+  if (saved && !Array.isArray(saved)) saved = null;
   const subjects: Subject[] = saved ?? DEFAULT_SUBJECTS;
   if (saved) {
     for (const def of DEFAULT_SUBJECTS) {
